@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <title>ShizoLauncher — TikTok</title>
+    <style>
+      /* Кадр 1080x1920. Всё положение задаёт renderAt(t) — CSS-анимаций нет, чтобы рендер был покадрово точным. */
+      html, body { margin: 0; width: 1080px; height: 1920px; overflow: hidden; background: #0b0a1e; color: #f5f0fb; font-family: 'Segoe UI Variable Display', 'Segoe UI', sans-serif; }
+      #bg { position: absolute; inset: 0; background: linear-gradient(180deg, #0b0a1e 0%, #150f33 38%, #2c1657 68%, #5a2380 88%, #8a2f8f 100%); }
+      #sun { position: absolute; left: 50%; bottom: -760px; width: 1500px; height: 1500px; margin-left: -750px; border-radius: 50%; background: radial-gradient(circle, rgba(255, 120, 200, 0.55) 0%, rgba(240, 63, 208, 0.25) 38%, transparent 68%); }
+      .star { position: absolute; width: 3px; height: 3px; border-radius: 50%; background: #fff; }
+      .layer { position: absolute; inset: 0; opacity: 0; }
+      .hl { background: linear-gradient(180deg, #ff6be0, #b25cff); -webkit-background-clip: text; color: transparent; }
+
+      /* шапка сцен: держимся ниже верхней панели TikTok */
+      #head { top: 150px; bottom: auto; height: 120px; }
+      #brand { display: flex; align-items: center; gap: 18px; padding: 0 90px; font-size: 40px; font-weight: 700; }
+      #brand img { width: 72px; height: 72px; object-fit: contain; }
+      #segs { display: flex; gap: 12px; padding: 22px 90px 0; }
+      #segs i { flex: 1; height: 8px; border-radius: 8px; background: rgba(255, 255, 255, 0.16); overflow: hidden; }
+      #segs b { display: block; height: 100%; width: 0; border-radius: 8px; background: linear-gradient(90deg, #9b45f5, #f03fd0); }
+
+      .cap { position: absolute; left: 90px; right: 90px; top: 310px; }
+      h1 { margin: 0; font-size: 86px; line-height: 1.06; font-weight: 800; letter-spacing: -2px; }
+      .cap p { margin: 20px 0 0; font-size: 42px; color: #d6cde6; }
+      .card { position: absolute; left: 90px; top: 610px; width: 900px; border-radius: 40px; overflow: hidden; border: 2px solid rgba(255, 255, 255, 0.16); box-shadow: 0 40px 120px rgba(240, 63, 208, 0.35), 0 10px 40px rgba(0, 0, 0, 0.5); }
+      .card img { display: block; width: 100%; }
+
+      .center { position: absolute; left: 0; right: 0; text-align: center; }
+      #intro img, #outro img { width: 900px; }
+      .big { font-size: 96px; line-height: 1.08; font-weight: 800; letter-spacing: -2px; }
+      #ip { display: inline-block; padding: 26px 48px; border-radius: 30px; font-size: 60px; font-weight: 700; background: rgba(255, 255, 255, 0.08); border: 2px solid rgba(255, 255, 255, 0.2); box-shadow: 0 20px 80px rgba(240, 63, 208, 0.35); }
+      .small { font-size: 44px; color: #d6cde6; }
+    </style>
+  </head>
+  <body>
+    <div id="bg"></div>
+    <div id="sun"></div>
+    <div id="stars"></div>
+
+    <div class="layer" id="intro">
+      <div class="center" style="top: 520px"><img id="intro-logo" src="../src/renderer/assets/logo.webp" alt="" /></div>
+      <div class="center big" style="top: 900px" data-line>У нашего сервера</div>
+      <div class="center big" style="top: 1010px" data-line>теперь <span class="hl">свой лаунчер</span></div>
+    </div>
+
+    <div class="layer" id="head">
+      <div id="brand"><img src="../src/renderer/assets/sz.webp" alt="" />ShizoLauncher</div>
+      <div id="segs"><i><b></b></i><i><b></b></i><i><b></b></i></div>
+    </div>
+
+    <div class="layer scene">
+      <div class="cap"><h1>Сборка сервера — <span class="hl">в один клик</span></h1><p>Сама ставится и сама обновляется</p></div>
+      <div class="card"><img src="shots/home.png" alt="" /></div>
+    </div>
+    <div class="layer scene">
+      <div class="cap"><h1>Заходи <span class="hl">как удобно</span></h1><p>Лицензия, Ely.by или офлайн</p></div>
+      <div class="card"><img src="shots/accounts.png" alt="" /></div>
+    </div>
+    <div class="layer scene">
+      <div class="cap"><h1>Моды с Modrinth <span class="hl">прямо в лаунчере</span></h1><p>Ресурспаки и шейдеры тоже</p></div>
+      <div class="card"><img src="shots/mods.png" alt="" /></div>
+    </div>
+
+    <div class="layer" id="outro">
+      <div class="center" style="top: 430px"><img id="outro-logo" src="../src/renderer/assets/logo.webp" alt="" /></div>
+      <div class="center big" style="top: 790px" data-item>Идёт <span class="hl">бета-тест</span></div>
+      <div class="center small" style="top: 930px" data-item>Хочешь поучаствовать?</div>
+      <div class="center" style="top: 1030px" data-item><span id="ip">Discord — в профиле</span></div>
+      <div class="center small" style="top: 1230px" data-item>play.shizostan.fun · Minecraft 1.21.11</div>
+    </div>
+
+    <script>
+      const DURATION = 18; // секунд; читает promo/render.mjs
+      const INTRO_END = 2.6;
+      const SCENE = 3.5;
+      const $ = (s) => document.querySelector(s);
+      const $$ = (s) => [...document.querySelectorAll(s)];
+      const scenes = $$('.scene');
+      const OUTRO = INTRO_END + SCENE * scenes.length;
+
+      const clamp = (x) => Math.min(1, Math.max(0, x));
+      const out3 = (x) => 1 - Math.pow(1 - clamp(x), 3);
+      const back = (x) => ((x = clamp(x) - 1), 1 + 2.70158 * x * x * x + 1.70158 * x * x); // лёгкий «перелёт» и возврат
+
+      // Звёзды с фиксированным зерном: одинаковые в каждом рендере
+      let seed = 7;
+      const rnd = () => ((seed = (seed * 16807) % 2147483647), seed / 2147483647);
+      for (let n = 0; n < 110; n++) {
+        const s = document.createElement('i');
+        s.className = 'star';
+        s.style.left = `${rnd() * 100}%`;
+        s.style.top = `${rnd() * 72}%`;
+        s.dataset.o = (0.15 + rnd() * 0.6).toFixed(2);
+        s.dataset.p = (rnd() * 6.28).toFixed(2);
+        $('#stars').append(s);
+      }
+      const stars = $$('.star');
+
+      function stagger(items, t, start, rise = 40) {
+        items.forEach((el, n) => {
+          const k = out3((t - start - n * 0.22) / 0.45);
+          el.style.opacity = k;
+          el.style.transform = `translateY(${(1 - k) * rise}px)`;
+        });
+      }
+
+      function renderAt(t) {
+        $('#sun').style.transform = `translateY(${-t * 9}px)`;
+        for (const s of stars) s.style.opacity = s.dataset.o * (0.75 + 0.25 * Math.sin(t * 1.6 + +s.dataset.p));
+
+        $('#intro').style.opacity = Math.min(out3(t / 0.35), 1 - clamp((t - (INTRO_END - 0.35)) / 0.3));
+        $('#intro-logo').style.transform = `scale(${0.6 + 0.4 * back(t / 0.7)})`;
+        stagger($$('#intro [data-line]'), t, 0.55);
+
+        $('#head').style.opacity = clamp((t - INTRO_END + 0.1) / 0.4) * (1 - clamp((t - OUTRO + 0.3) / 0.3));
+        scenes.forEach((el, n) => {
+          const start = INTRO_END + n * SCENE;
+          const enter = out3((t - start) / 0.5);
+          const leave = clamp((t - (start + SCENE - 0.3)) / 0.3);
+          const run = clamp((t - start) / SCENE);
+          el.style.opacity = enter * (1 - leave);
+          el.querySelector('.cap').style.transform = `translateY(${(1 - enter) * 50}px)`;
+          el.querySelector('.card').style.transform = `translateY(${(1 - enter) * 140 - leave * 60}px) scale(${0.95 + 0.05 * enter + 0.025 * run})`;
+          $$('#segs b')[n].style.width = `${run * 100}%`;
+        });
+
+        $('#outro').style.opacity = out3((t - OUTRO) / 0.4);
+        $('#outro-logo').style.transform = `scale(${0.6 + 0.4 * back((t - OUTRO) / 0.7)})`;
+        stagger($$('#outro [data-item]'), t, OUTRO + 0.5);
+      }
+
+      // Просмотр в браузере: tiktok.html проигрывается сам, ?t=5 показывает один кадр
+      const fixed = new URLSearchParams(location.search).get('t');
+      if (fixed != null) renderAt(+fixed);
+      else if (!navigator.userAgent.includes('Electron')) {
+        const t0 = performance.now();
+        (function loop() {
+          renderAt(((performance.now() - t0) / 1000) % DURATION);
+          requestAnimationFrame(loop);
+        })();
+      }
+    </script>
+  </body>
+</html>

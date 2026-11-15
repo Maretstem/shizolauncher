@@ -1,0 +1,75 @@
+# Сборка установщика на GitHub. Тег vX.Y.Z — ещё и релиз (лаунчеры игроков обновятся сами).
+# Подпись SignPath включается сама, когда в репозитории появятся SIGNPATH_API_TOKEN и SIGNPATH_ORGANIZATION_ID.
+name: Сборка
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write # создать релиз
+  actions: read # SignPath забирает артефакт сборки
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+      RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # нужен текст тега для описания релиза
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+
+      - name: Тег совпадает с версией в package.json
+        if: env.RELEASE == 'true'
+        shell: bash
+        run: |
+          v=$(node -p "require('./package.json').version")
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "::error::Тег $GITHUB_REF_NAME, а в package.json версия $v"; exit 1; }
+
+      - run: npm run dist
+
+      - name: Сохранить установщик
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: release/*.exe
+          if-no-files-found: error
+
+      - name: Подписать через SignPath
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: shizolauncher
+          signing-policy-slug: ${{ env.RELEASE == 'true' && 'release-signing' || 'test-signing' }}
+          github-artifact-id: ${{ steps.upload.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Выпустить релиз
+        if: env.RELEASE == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dir=release; [ -d signed ] && dir=signed
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$dir"/*.exe --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$dir"/*.exe --title "ShizoLauncher ${GITHUB_REF_NAME#v}" --notes-from-tag
+          fi

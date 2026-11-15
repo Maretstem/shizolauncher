@@ -1,0 +1,7 @@
+node_modules/
+dist/
+graphify-out/
+*.log
+release/
+promo/out/
+promo/shots/

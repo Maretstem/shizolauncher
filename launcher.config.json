@@ -1,0 +1,12 @@
+{
+  "serverName": "SHIZOSTAN",
+  "packUrl": "https://maretstem.github.io/shizo-mods/pack.json",
+  "serverAddress": "play.shizostan.fun",
+  "azureClientId": "",
+  "links": {
+    "discord": "https://discord.gg/bzXMHyUd7",
+    "telegram": "https://t.me/shizostan",
+    "site": ""
+  },
+  "updateRepo": "Maretstem/shizolauncher"
+}

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https: data: shizo:" />
+    <title>ShizoLauncher</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="sky" id="sky"><div class="bgimg" id="bgimg"></div><div class="sun"></div></div>
+    <div class="drag"></div>
+
+    <aside class="side glass">
+      <div class="side-head">
+        <span>Сборки</span>
+        <button class="ghost-btn" id="add" title="Новый экземпляр" aria-label="Новый экземпляр"></button>
+      </div>
+      <div id="inst-list" class="inst-list"></div>
+      <div class="side-foot" id="side-foot"></div>
+    </aside>
+
+    <div class="main">
+      <header class="top">
+        <nav class="pills glass" id="tabs" aria-label="Разделы"></nav>
+        <div class="top-right" id="top-right"></div>
+      </header>
+      <main id="view"></main>
+    </div>
+
+    <dialog id="dlg" class="glass"></dialog>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script src="app.js"></script>
+  </body>
+</html>

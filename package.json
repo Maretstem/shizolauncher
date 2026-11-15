@@ -1,0 +1,46 @@
+{
+  "name": "shizolauncher",
+  "productName": "ShizoLauncher",
+  "version": "1.2.2",
+  "description": "Лаунчер Minecraft-сервера SHIZOSTAN",
+  "author": "SHIZOSTAN",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test",
+    "shot": "electron tools/shot.mjs",
+    "pack": "node tools/make-pack.mjs",
+    "dist": "electron-builder --win nsis --publish never",
+    "smoke": "node --use-env-proxy tools/smoke.mjs"
+  },
+  "build": {
+    "appId": "ru.shizostan.launcher",
+    "productName": "ShizoLauncher",
+    "files": [
+      "src/**",
+      "launcher.config.json",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "directories": {
+      "output": "release"
+    }
+  },
+  "devDependencies": {
+    "electron": "^45.3.1",
+    "electron-builder": "^26.18.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Maretstem/shizolauncher.git"
+  },
+  "homepage": "https://github.com/Maretstem/shizolauncher"
+}
