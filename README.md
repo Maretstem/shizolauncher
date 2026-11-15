@@ -9,7 +9,7 @@
 Последняя версия — на странице [Releases](https://github.com/Maretstem/shizolauncher/releases/latest): файл `ShizoLauncher Setup X.Y.Z.exe`.
 Уже установленный лаунчер обновляется сам: при запуске наверху появляется кнопка «Обновление».
 
-Пока установщик не подписан, Windows покажет окно SmartScreen — нажми «Подробнее» → «Выполнить в любом случае».
+Установщик не подписан, поэтому Windows покажет окно SmartScreen — нажми «Подробнее» → «Выполнить в любом случае».
 
 - Discord: https://discord.gg/bzXMHyUd7
 - Telegram: https://t.me/shizostan
@@ -131,7 +131,7 @@ node tools/make-pack.mjs ../shizostan-pack --version 1.0.1 --changelog "Что �
 
 ## Выпуск новой версии
 
-Релизы собирает GitHub, а не твой компьютер (так требует SignPath для бесплатной подписи):
+Релизы собирает GitHub, а не твой компьютер:
 
 1. Подними `version` в `package.json`, например `1.2.2`, и отправь изменения.
 2. Поставь тег с той же версией и отправь его:
@@ -144,16 +144,6 @@ node tools/make-pack.mjs ../shizostan-pack --version 1.0.1 --changelog "Что �
 3. Через 5–10 минут [сборка](https://github.com/Maretstem/shizolauncher/actions) создаст релиз с установщиком, а лаунчеры игроков предложат обновиться. Текст тега станет описанием релиза.
 
 Если тег не совпадает с версией в `package.json`, сборка остановится с ошибкой — иначе лаунчер предлагал бы обновление бесконечно.
-
-### Подпись
-
-Подписью занимается [SignPath Foundation](https://signpath.org) бесплатно, см. [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md).
-После одобрения заявки в настройках репозитория нужно добавить:
-
-- секрет `SIGNPATH_API_TOKEN` (Settings → Secrets and variables → Actions → Secrets);
-- переменную `SIGNPATH_ORGANIZATION_ID` (там же, вкладка Variables).
-
-Пока их нет, сборка выпускает неподписанный установщик — всё остальное работает так же.
 
 ## Обновление самого лаунчера
 
