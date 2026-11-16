@@ -695,8 +695,8 @@ test('уведомления: первая проверка молчит, дал
   const first = diffNews({}, now);
   assert.equal(first.items.length, 0); // при первом запуске не заваливаем старыми новостями
   assert.deepEqual(diffNews(first.seen, now).items, []);
-  const later = diffNews(first.seen, { launcher: '1.4.1', pack: { version: '1.0.6', changelog: 'Вайп' }, news: [{ date: '2026-11-18', text: 'Турнир' }, ...now.news], posts: [{ id: 'b', tag: 'event', title: 'Турнир', text: '' }, ...now.posts] });
-  assert.deepEqual(later.items.map((i) => [i.kind, i.title]), [['launcher', 'Вышел ShizoLauncher 1.4.1'], ['pack', 'Сборка обновлена до 1.0.6'], ['news', 'Новость сервера'], ['news', 'Ивент: Турнир']]);
+  const later = diffNews(first.seen, { launcher: '1.4.1', pack: { version: '1.0.6', changelog: 'Вайп' }, news: [{ date: '2026-11-18', text: 'Турнир' }, ...now.news], posts: [{ id: 'd', tag: 'news', title: 'Тихо', text: '', notify: false }, { id: 'c', tag: 'news', title: 'Вайп', text: '' }, { id: 'b', tag: 'event', title: 'Турнир', text: '' }, ...now.posts] });
+  assert.deepEqual(later.items.map((i) => [i.kind, i.title]), [['launcher', 'Вышел ShizoLauncher 1.4.1'], ['pack', 'Сборка обновлена до 1.0.6'], ['news', 'Новость сервера'], ['news', 'Новость: Вайп'], ['news', 'Ивент: Турнир']]);
   // Нет сети (null/undefined) — ничего не забываем и не показываем
   const offline = diffNews(later.seen, { launcher: undefined, pack: null, news: null, posts: null });
   assert.deepEqual([offline.items, offline.seen], [[], later.seen]);

@@ -18,7 +18,7 @@ let menuOpen = false; // выпадающее меню аккаунтов
 let update = null; // доступное обновление лаунчера
 let devlog = null; // посты вкладки «Разработка»
 const skinViews = new Map(); // id аккаунта -> готовая 3D-сцена или Promise, пока грузится
-const DEV_TAGS = { dev: 'Разработка', event: 'Ивент', update: 'Обновление' };
+const DEV_TAGS = { dev: 'Разработка', event: 'Ивент', news: 'Новость', update: 'Обновление' };
 const store = {
   get: (k) => {
     try {
@@ -575,7 +575,9 @@ function panelOverview(i) {
     logBox(i.id, 8),
   );
   const past = (i.isPack && pack?.history) || [];
-  const news = (i.isPack && pack?.news) || [];
+  // Новости на главной: из сборки и посты «Новость»/«Ивент» из вкладки «Разработка», свежие сверху
+  const posted = (devlog?.posts ?? []).filter((p) => p.tag === 'news' || p.tag === 'event').map((p) => ({ date: p.date, text: `${p.tag === 'event' ? '🎉 ' : ''}${p.title}${p.text ? `\n${p.text}` : ''}` }));
+  const news = i.isPack ? [...posted, ...(pack?.news ?? [])].sort((a, b) => String(b.date ?? '').localeCompare(String(a.date ?? ''))).slice(0, 5) : [];
   const notes = i.isPack && (pack?.changelog || past.length || news.length);
   view.append(notes
     ? h('div.cols', {}, main, h('div.side-stack', {},

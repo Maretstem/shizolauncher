@@ -320,3 +320,4 @@ dialog.wide { width: min(980px, 92vw); }
 .post-full img, .post-full video { width: 100%; border-radius: 14px; background: rgba(8, 5, 20, 0.5); }
 .notify-list { display: flex; flex-direction: column; gap: 8px; padding-left: 28px; }
 .post-full:focus { outline: none; }
+.tag-news { color: #ff9be9; border-color: rgba(240, 63, 208, 0.35); }

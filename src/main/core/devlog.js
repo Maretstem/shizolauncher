@@ -1,6 +1,6 @@
 // Вкладка «Разработка» и уведомления: devlog.json лежит рядом с pack.json, его пишет веб-панель админов.
 //
-// devlog.json: { posts: [{ id, date, title, tag: 'dev'|'event'|'update', text, media: [{ src, type: 'image'|'video' }] }] }
+// devlog.json: { posts: [{ id, date, title, tag: 'dev'|'event'|'news'|'update', notify, text, media: [{ src, type: 'image'|'video' }] }] }
 import { fetchJson, httpsUrl } from './net.js';
 
 export const devlogUrl = (packUrl) => (packUrl ? new URL('devlog.json', httpsUrl(packUrl)).href : null);
@@ -21,7 +21,8 @@ export async function fetchDevlog(packUrl) {
         id: p.id,
         date: p.date ?? null,
         title: p.title.slice(0, 120),
-        tag: ['dev', 'event', 'update'].includes(p.tag) ? p.tag : 'dev',
+        tag: ['dev', 'event', 'news', 'update'].includes(p.tag) ? p.tag : 'dev',
+        notify: p.notify !== false, // админ мог выключить уведомление для поста
         text: String(p.text ?? '').slice(0, 5000),
         // Картинки и видео — только веб-адреса (относительные — рядом с devlog.json), никаких file: и прочих схем
         media: (Array.isArray(p.media) ? p.media : []).slice(0, 10).flatMap((m) => {
@@ -65,8 +66,9 @@ export function diffNews(seen, now) {
   }
   if (now.posts) {
     const known = new Set(seen?.posts ?? []);
-    for (const p of now.posts.filter((x) => !known.has(x.id)).slice(0, 3)) {
-      push({ kind: p.tag === 'event' ? 'news' : 'devlog', title: p.tag === 'event' ? `Ивент: ${p.title}` : `Разработка: ${p.title}`, body: firstLine(p.text) || 'Подробности во вкладке «Разработка».', tab: 'dev', post: p.id });
+    for (const p of now.posts.filter((x) => !known.has(x.id) && x.notify !== false).slice(0, 3)) {
+      const news = p.tag === 'event' || p.tag === 'news';
+      push({ kind: news ? 'news' : 'devlog', title: `${{ event: 'Ивент', news: 'Новость', update: 'Обновление' }[p.tag] ?? 'Разработка'}: ${p.title}`, body: firstLine(p.text) || 'Подробности во вкладке «Разработка».', tab: 'dev', post: p.id });
     }
     next.posts = now.posts.map((p) => p.id).slice(0, 50);
   }
