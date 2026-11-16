@@ -51,6 +51,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # checkout подменяет тег облегчённым — без этого описанием релиза станет текст коммита, а не тега
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" release/*.exe --clobber
           else
