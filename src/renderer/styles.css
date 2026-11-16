@@ -264,3 +264,5 @@ dialog.wide { width: min(980px, 92vw); }
 .side-stack { display: flex; flex-direction: column; gap: 18px; }
 .rows.scroll { max-height: 50vh; overflow-y: auto; }
 .row .body b.wrap { white-space: normal; }
+button.ver { text-align: left; padding: 6px 10px 0; }
+button.ver:hover { color: var(--text); text-decoration: underline; }

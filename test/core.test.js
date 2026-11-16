@@ -333,10 +333,10 @@ test('обновление лаунчера: сравнение версий, п
   const api = `http://127.0.0.1:${server.address().port}`;
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'shizo-upd-'));
   try {
-    assert.equal(await checkUpdate('', '1.0.0', api), null); // репозиторий не задан
-    assert.equal(await checkUpdate('no/repo', '1.0.0', api), null); // релизов нет — не ошибка
-    assert.equal(await checkUpdate('a/b', '1.3.0', api), null); // уже последняя
-    const info = await checkUpdate('a/b', '1.2.0', api);
+    assert.equal(await checkUpdate('', '1.0.0', api, api), null); // репозиторий не задан
+    assert.equal(await checkUpdate('no/repo', '1.0.0', api, api), null); // релизов нет — не ошибка
+    assert.equal(await checkUpdate('a/b', '1.3.0', api, api), null); // уже последняя
+    const info = await checkUpdate('a/b', '1.2.0', api, api);
     assert.deepEqual([info.version, info.notes, info.size], ['1.3.0', 'что нового', exe.length]);
     assert.equal(await fs.readFile(await downloadUpdate(info, dir), 'utf8'), 'installer-bytes');
     await assert.rejects(downloadUpdate({ ...info, sha256: '0'.repeat(64) }, dir), /контрольная сумма/);
@@ -638,5 +638,40 @@ test('статус Discord: рукопожатие и установка акт�
     assert.equal(await showPresence('good', {}, { prefix: `\\\\?\\pipe\\shizo-nobody-${process.pid}-`, timeout: 500 }), null); // Discord не запущен
   } finally {
     server.close();
+  }
+});
+
+test('обновление лаунчера через latest.yml: без API, с проверкой sha512, API лежит — всё равно работает', async () => {
+  const fs = await import('node:fs/promises');
+  const http = await import('node:http');
+  const os = await import('node:os');
+  const { createHash } = await import('node:crypto');
+  const { checkUpdate, downloadUpdate } = await import('../src/main/core/update.js');
+  const exe = Buffer.from('installer-1.4.0');
+  const sha512 = createHash('sha512').update(exe).digest('base64');
+  const yml = `version: 1.4.0\nfiles:\n  - url: ShizoLauncher-Setup-1.4.0.exe\n    sha512: ${sha512}\n    size: ${exe.length}\npath: ShizoLauncher-Setup-1.4.0.exe\nsha512: ${sha512}\nreleaseDate: '2026-11-17T00:00:00.000Z'\n`;
+  let apiCalls = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === '/a/b/releases/latest/download/latest.yml') return res.end(yml);
+    if (req.url === '/a/b/releases/download/v1.4.0/ShizoLauncher-Setup-1.4.0.exe') return res.end(exe);
+    if (req.url.startsWith('/repos/')) {
+      apiCalls++;
+      return res.writeHead(403).end('{"message":"API rate limit exceeded"}'); // лимит API исчерпан
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'shizo-yml-'));
+  try {
+    assert.equal(await checkUpdate('a/b', '1.4.0', base, base), null); // уже последняя — API не нужен
+    assert.equal(apiCalls, 0);
+    const info = await checkUpdate('a/b', '1.3.2', base, base);
+    assert.deepEqual([info.version, info.size, info.notes], ['1.4.0', exe.length, '']); // описание недоступно — не беда
+    assert.equal(await fs.readFile(await downloadUpdate(info, dir), 'utf8'), 'installer-1.4.0');
+    await assert.rejects(downloadUpdate({ ...info, sha512: 'AAAA' }, dir), /контрольная сумма/);
+  } finally {
+    server.close();
+    await fs.rm(dir, { recursive: true, force: true });
   }
 });

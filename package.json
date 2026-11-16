@@ -1,7 +1,7 @@
 {
   "name": "shizolauncher",
   "productName": "ShizoLauncher",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "Лаунчер Minecraft-сервера SHIZOSTAN",
   "author": "SHIZOSTAN",
   "license": "MIT",
@@ -28,7 +28,8 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "${productName}-Setup-${version}.${ext}"
     },
     "directories": {
       "output": "release"

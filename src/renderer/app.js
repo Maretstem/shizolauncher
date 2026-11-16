@@ -207,7 +207,7 @@ function renderSide() {
     telegram && h('button.side-link', { onclick: () => act(() => call('openExternal', telegram)) }, icon('chat'), 'Telegram'),
     site && h('button.side-link', { onclick: () => act(() => call('openExternal', site)) }, icon('globe'), 'Сайт'),
     h('button.side-link', { onclick: () => act(() => call('openFolder')) }, icon('folder'), 'Папка лаунчера'),
-    h('div.ver', {}, `Лаунчер ${S.version}`),
+    h('button.ver', { title: 'Проверить обновления', onclick: manualUpdateCheck }, `Лаунчер ${S.version}`),
   );
 }
 
@@ -246,6 +246,17 @@ function addAccount() {
       way('Офлайн', 'Только ник, без пароля', loginOffline),
     ),
     [closeBtn()]);
+}
+
+async function manualUpdateCheck() {
+  toast('Проверяю обновления…');
+  try {
+    const u = await checkLauncherUpdate();
+    if (u) updateDialog();
+    else toast(`У тебя последняя версия — ${S.version}`);
+  } catch (e) {
+    toast(`Не удалось проверить: ${e.message}. Проверь интернет или VPN.`, true);
+  }
 }
 
 function updateDialog() {
@@ -893,6 +904,7 @@ function viewSettings() {
     ),
     h('section.panel.glass', {},
       h('h3', {}, 'Диагностика и кэш'),
+      h('div.row', {}, h('div.body', {}, h('b', {}, `Лаунчер ${S.version}`), h('span', {}, update ? `Доступна версия ${update.version}` : 'Обновления проверяются при запуске и каждые 30 минут')), h('button.btn', { onclick: manualUpdateCheck }, icon('refresh', 16), 'Проверить обновления')),
       h('div.actions', {},
         h('button.btn.primary', { onclick: runCheckup }, 'Проверить всё'),
         h('button.btn', { onclick: () => act(async () => { const r = await call('cleanCache'); toast(r.files ? `Удалено файлов: ${r.files}, освобождено ${mb(r.bytes)}` : 'Чистить нечего — кэш в порядке'); }) }, 'Очистить кэш'),
@@ -991,5 +1003,8 @@ document.addEventListener('keydown', (e) => e.key === 'Escape' && menuOpen && ((
 
 refresh().then(loadRemote);
 // Обновление лаунчера: тихо проверяем при старте, кнопка появится наверху
-call('checkUpdate').then((u) => u && ((update = u), renderTop()), () => {});
+// Обновление лаунчера: при старте и каждые 30 минут — лаунчер часто держат открытым сутками
+const checkLauncherUpdate = () => call('checkUpdate').then((u) => ((update = u ?? null), renderTop(), u));
+checkLauncherUpdate().catch(() => {});
+setInterval(() => checkLauncherUpdate().catch(() => {}), 30 * 60_000);
 setInterval(loadRemote, 60_000);
