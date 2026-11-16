@@ -1,6 +1,6 @@
 // Главный процесс: окно, хранение настроек/аккаунтов, IPC-мост к ядру.
 import { spawn } from 'node:child_process';
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, net, protocol, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, net, Notification, protocol, safeStorage, shell, Tray } from 'electron';
 import { readFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -12,7 +12,9 @@ import * as instances from './core/instances.js';
 import { ensureLoader, install, launch, loaderVersions, versionList } from './core/minecraft.js';
 import * as modrinth from './core/modrinth.js';
 import { readJson, useFetch, writeJson } from './core/net.js';
-import { PACK_ID, packStatus, syncPack } from './core/pack.js';
+import { fetchPack, PACK_ID, packStatus, syncPack } from './core/pack.js';
+import { diffNews, fetchDevlog, wanted } from './core/devlog.js';
+import { loadSkin } from './core/skin.js';
 import { checkUpdate, downloadUpdate } from './core/update.js';
 import { listBackups, makeBackup, restoreBackup } from './core/backup.js';
 import { showPresence } from './core/discord.js';
@@ -29,16 +31,23 @@ app.setPath('userData', path.join(ROOT, 'electron'));
 useFetch((url, init) => net.fetch(url, init));
 
 const brand = JSON.parse(readFileSync(path.join(here, '../../launcher.config.json'), 'utf8'));
-const DEFAULTS = { memory: 4096, javaPath: '', jvmArgs: '', autoJoin: true, selected: null, current: PACK_ID, theme: 'sunset', accent: '', bgImage: '', bgBlur: 0, bgDim: 45, autoClean: true, bgUpdate: true, discordPresence: true, modCheck: true };
+const DEFAULTS = { memory: 4096, javaPath: '', jvmArgs: '', autoJoin: true, selected: null, current: PACK_ID, theme: 'sunset', accent: '', bgImage: '', bgBlur: 0, bgDim: 45, autoClean: true, bgUpdate: true, discordPresence: true, modCheck: true, autostart: false, closeToTray: false, notifications: true, notify: { launcher: true, pack: true, news: true, devlog: true } };
 const HOSTS = { 'Серверы Minecraft': 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json', Fabric: 'https://meta.fabricmc.net/v2/versions/loader', Modrinth: 'https://api.modrinth.com/v2/tag/loader', 'Ely.by': 'https://authserver.ely.by/' };
 // Картинки с диска (скриншоты, свой фон) окно получает только через эту схему — прямого доступа к файлам у него нет
 protocol.registerSchemesAsPrivileged([{ scheme: 'shizo', privileges: { standard: true, secure: true } }]);
 const SETTING_KEYS = [...Object.keys(DEFAULTS), 'packUrl', 'serverAddress', 'azureClientId'];
 const settingsFile = path.join(ROOT, 'settings.json');
 const accountsFile = path.join(ROOT, 'accounts.bin');
+const seenFile = path.join(ROOT, 'notified.json'); // что уже показывали в уведомлениях
+const ICON = path.join(here, '../renderer/assets/icon.png');
+// Запуск из автозагрузки Windows: окно не показываем, лаунчер живёт в трее
+const hiddenStart = process.argv.includes('--hidden');
 
 let win;
 let importList = []; // найденные папки других лаунчеров: окну отдаём номер, а не путь
+let tray = null;
+let quitting = false;
+const skins = new Map(); // id аккаунта -> { at, skin }
 
 // Обновляет сборку сервера; если версия меняется — сначала сохраняет миры и настройки
 async function updatePack(opts) {
@@ -74,8 +83,78 @@ async function saveAccounts() {
 }
 async function saveSettings(patch) {
   for (const k of Object.keys(patch)) if (!SETTING_KEYS.includes(k)) throw new Error(`Неизвестная настройка: ${k}`);
+  if ('autostart' in patch) setAutostart(!!patch.autostart);
   settings = { ...settings, ...patch };
   await writeJson(settingsFile, settings);
+  updateTray();
+}
+
+// Автозапуск с Windows: запись в HKCU\…\Run. В режиме разработки (electron .) запись вела бы на голый electron.exe.
+function setAutostart(on) {
+  if (!app.isPackaged) {
+    if (on) throw new Error('Автозапуск работает только в установленном лаунчере');
+    return;
+  }
+  app.setLoginItemSettings({ openAtLogin: on, name: 'ShizoLauncher', path: process.execPath, args: ['--hidden'] });
+}
+
+function showWindow() {
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+// Значок в трее нужен, только когда лаунчер умеет жить без окна
+function updateTray() {
+  const need = hiddenStart || config().autostart || config().closeToTray;
+  if (!need) {
+    tray?.destroy();
+    tray = null;
+    return;
+  }
+  if (tray) return;
+  tray = new Tray(nativeImage.createFromPath(ICON).resize({ width: 16, height: 16 }));
+  tray.setToolTip(`ShizoLauncher ${app.getVersion()}`);
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Открыть ShizoLauncher', click: showWindow },
+    { label: 'Разработка', click: () => (showWindow(), send('navigate', { tab: 'dev' })) },
+    { label: 'Проверить обновления', click: () => (showWindow(), send('navigate', { action: 'checkUpdate' })) },
+    { type: 'separator' },
+    { label: 'Выйти', click: () => app.quit() },
+  ]));
+  tray.on('click', showWindow);
+}
+
+// ---------- уведомления: обновления лаунчера и сборки, новости, ивенты, посты о разработке ----------
+// Проверяет главный процесс, а не окно: так они приходят и когда лаунчер свёрнут в трей.
+async function checkNews() {
+  const cfg = config();
+  if (cfg.notifications === false) return;
+  const [launcher, pk, dev] = await Promise.all([
+    checkUpdate(cfg.updateRepo, app.getVersion()).then((u) => u?.version ?? null, () => undefined),
+    cfg.packUrl ? fetchPack(cfg.packUrl).catch(() => null) : null,
+    cfg.packUrl ? fetchDevlog(cfg.packUrl).catch(() => null) : null,
+  ]);
+  const seen = await readJson(seenFile, {});
+  const { items, seen: next } = diffNews(seen, {
+    launcher,
+    pack: pk && { version: pk.version, changelog: pk.changelog },
+    news: pk && (Array.isArray(pk.news) ? pk.news : []),
+    posts: dev?.posts ?? null,
+  });
+  await writeJson(seenFile, next);
+  if (!Notification.isSupported()) return;
+  for (const it of items.filter((x) => wanted(cfg, x.kind))) notify(it);
+}
+
+function notify({ title, body, tab, post }) {
+  const n = new Notification({ title, body, icon: ICON });
+  n.on('click', () => {
+    showWindow();
+    send('navigate', tab === 'update' ? { action: 'checkUpdate' } : { tab, post });
+  });
+  n.show();
 }
 async function addAccount(acc) {
   accounts = [...accounts.filter((a) => a.id !== acc.id), acc];
@@ -117,6 +196,18 @@ const handlers = {
     };
   },
   setSettings: (patch) => saveSettings(patch),
+  devlog: () => fetchDevlog(config().packUrl),
+  testNotification: () => notify({ title: 'Уведомления ShizoLauncher работают', body: 'Так будут выглядеть новости, ивенты и обновления.', tab: 'home' }),
+  // Скин для 3D-превью; кэш на 10 минут, чтобы меню не дёргало серверы скинов при каждом открытии
+  async skin(id) {
+    const acc = accounts.find((a) => a.id === id);
+    if (!acc) return null;
+    const hit = skins.get(id);
+    if (hit && Date.now() - hit.at < 600_000) return hit.skin;
+    const skin = await loadSkin(acc);
+    skins.set(id, { at: Date.now(), skin });
+    return skin;
+  },
 
   // --- аккаунты ---
   addOffline: (name) => addAccount(offlineAccount(String(name).trim())),
@@ -439,13 +530,16 @@ ipcMain.handle('api', (_event, name, ...args) => {
 });
 
 if (!app.requestSingleInstanceLock()) app.quit();
-app.on('second-instance', () => win?.focus());
+app.on('second-instance', showWindow);
 app.on('window-all-closed', () => app.quit());
+app.on('before-quit', () => (quitting = true));
 
 app.whenReady().then(async () => {
   settings = await readJson(settingsFile, {});
   accounts = await loadAccounts();
   Menu.setApplicationMenu(null);
+  app.setAppUserModelId('ru.shizostan.launcher'); // то же, что appId установщика — иначе Windows не покажет уведомления
+  if (config().autostart) setAutostart(true); // путь к exe мог смениться после переустановки
   win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -453,7 +547,7 @@ app.whenReady().then(async () => {
     minHeight: 660,
     show: false,
     backgroundColor: '#100a1c',
-    icon: path.join(here, '../renderer/assets/icon.png'),
+    icon: ICON,
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#00000000', symbolColor: '#cbbfe0', height: 40 },
     webPreferences: { preload: path.join(here, 'preload.cjs'), contextIsolation: true, sandbox: true },
@@ -472,6 +566,15 @@ app.whenReady().then(async () => {
   if (config().autoClean) cleanCache(ROOT).catch(() => {}); // тихо, при каждом запуске
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e) => e.preventDefault());
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => !hiddenStart && win.show());
+  // Крестик сворачивает в трей, если игрок так выбрал; «Выйти» в трее и обновление закрывают по-настоящему
+  win.on('close', (e) => {
+    if (quitting || !config().closeToTray) return;
+    e.preventDefault();
+    win.hide();
+  });
+  updateTray();
   await win.loadFile(path.join(here, '../renderer/index.html'));
+  setTimeout(() => checkNews().catch(() => {}), 15_000);
+  setInterval(() => checkNews().catch(() => {}), 10 * 60_000);
 });

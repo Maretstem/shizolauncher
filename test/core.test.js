@@ -263,6 +263,19 @@ test('веб-панель: публикация через API GitHub (маке�
     assert.deepEqual(commits.c1.parents, ['c9']); // поверх чужого коммита, ничего не затёрто
     assert.equal(refs.main, 'c1');
     assert.ok(steps.some((s) => /поверх его версии/.test(s)) && steps.some((s) => /выпускаю как 1\.3/.test(s)));
+
+    // Пост «Разработки»: devlog.json и картинки в devlog/, сборка не меняется
+    await assert.rejects(core.publishDevlog(gh, { post: { title: ' ', tag: 'dev' } }), /заголовок/);
+    await assert.rejects(core.publishDevlog(gh, { post: { title: 'x', tag: 'dev' }, media: [{ name: 'a.exe', data: new ArrayBuffer(1) }] }), /PNG/);
+    const gif = new TextEncoder().encode('GIF89a').buffer;
+    const posts = await core.publishDevlog(gh, { post: { title: 'Новый биом', tag: 'event', text: 'Скоро' }, media: [{ name: 'a.GIF', data: gif }, { name: 'b.mp4', data: gif }], now: new Date(1000) });
+    assert.deepEqual(posts.map((p) => [p.id, p.title, p.tag, p.media]), [['rs', 'Новый биом', 'event', [{ src: 'devlog/rs-0.gif', type: 'image' }, { src: 'devlog/rs-1.mp4', type: 'video' }]]]);
+    assert.deepEqual(JSON.parse(blobs.get(trees.t1['devlog.json'])).posts, posts);
+    assert.ok(trees.t1['devlog/rs-0.gif'] && trees.t1['files/mods/mine-1.0.jar'], 'медиа добавлены, сборка на месте');
+    assert.equal(JSON.parse(blobs.get(trees.t1['pack.json'])).version, '1.3');
+    assert.deepEqual([refs.main, refs['gh-pages'], commits.c1.message], ['c1', 'c1', 'Разработка: Новый биом']);
+    assert.deepEqual(await core.publishDevlog(gh, { removeId: 'rs' }), []);
+    assert.ok(!trees.t1['devlog/rs-0.gif'] && !trees.t1['devlog/rs-1.mp4'], 'файлы удалённого поста убраны');
   } finally {
     server.close();
   }
@@ -674,4 +687,47 @@ test('обновление лаунчера через latest.yml: без API, �
     server.close();
     await fs.rm(dir, { recursive: true, force: true });
   }
+});
+
+test('уведомления: первая проверка молчит, дальше — только новое', async () => {
+  const { diffNews, wanted } = await import('../src/main/core/devlog.js');
+  const now = { launcher: '1.4.0', pack: { version: '1.0.5', changelog: 'Новые мобы\nи прочее' }, news: [{ date: '2026-11-17', text: 'Ивент в субботу' }], posts: [{ id: 'a', tag: 'dev', title: 'Новый биом', text: 'Скоро' }] };
+  const first = diffNews({}, now);
+  assert.equal(first.items.length, 0); // при первом запуске не заваливаем старыми новостями
+  assert.deepEqual(diffNews(first.seen, now).items, []);
+  const later = diffNews(first.seen, { launcher: '1.4.1', pack: { version: '1.0.6', changelog: 'Вайп' }, news: [{ date: '2026-11-18', text: 'Турнир' }, ...now.news], posts: [{ id: 'b', tag: 'event', title: 'Турнир', text: '' }, ...now.posts] });
+  assert.deepEqual(later.items.map((i) => [i.kind, i.title]), [['launcher', 'Вышел ShizoLauncher 1.4.1'], ['pack', 'Сборка обновлена до 1.0.6'], ['news', 'Новость сервера'], ['news', 'Ивент: Турнир']]);
+  // Нет сети (null/undefined) — ничего не забываем и не показываем
+  const offline = diffNews(later.seen, { launcher: undefined, pack: null, news: null, posts: null });
+  assert.deepEqual([offline.items, offline.seen], [[], later.seen]);
+  assert.equal(wanted({ notifications: true, notify: { pack: false } }, 'pack'), false);
+  assert.equal(wanted({ notifications: true, notify: { pack: false } }, 'devlog'), true);
+  assert.equal(wanted({ notifications: false, notify: {} }, 'devlog'), false);
+});
+
+test('лента разработки: devlog.json рядом с pack.json, медиа — только веб-адреса', async () => {
+  const http = await import('node:http');
+  const { fetchDevlog } = await import('../src/main/core/devlog.js');
+  const body = JSON.stringify({ posts: [{ id: 'x1', date: '2026-11-17', title: 'Замок', tag: 'event', text: 'Превью', media: [{ src: 'devlog/x1-0.gif', type: 'image' }, { src: 'file:///C:/Windows/win.ini' }, { src: 'devlog/x1-1.mp4', type: 'video' }] }, { title: 'без id' }] });
+  let has = true;
+  const server = http.createServer((req, res) => (req.url === '/p/devlog.json' && has ? res.end(body) : res.writeHead(404).end()));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}/p/pack.json`;
+  try {
+    const d = await fetchDevlog(base);
+    assert.equal(d.posts.length, 1);
+    assert.deepEqual(d.posts[0].media, [{ src: base.replace('pack.json', 'devlog/x1-0.gif'), type: 'image' }, { src: base.replace('pack.json', 'devlog/x1-1.mp4'), type: 'video' }]);
+    has = false;
+    assert.deepEqual(await fetchDevlog(base), { posts: [] }); // постов ещё не было — не ошибка
+    assert.deepEqual(await fetchDevlog(''), { posts: [] });
+  } finally {
+    server.close();
+  }
+});
+
+test('скин из профиля Yggdrasil', async () => {
+  const { skinFromProfile } = await import('../src/main/core/skin.js');
+  const value = Buffer.from(JSON.stringify({ textures: { SKIN: { url: 'http://textures.minecraft.net/texture/abc', metadata: { model: 'slim' } } } })).toString('base64');
+  assert.deepEqual(skinFromProfile({ properties: [{ name: 'textures', value }] }), { url: 'https://textures.minecraft.net/texture/abc', slim: true });
+  assert.equal(skinFromProfile({ properties: [] }), null);
 });

@@ -16,6 +16,26 @@ const browse = { type: 'mod', query: '', sort: 'relevance', category: '' };
 const consoleView = { filter: '', level: 'all', follow: true };
 let menuOpen = false; // выпадающее меню аккаунтов
 let update = null; // доступное обновление лаунчера
+let devlog = null; // посты вкладки «Разработка»
+const skinViews = new Map(); // id аккаунта -> готовая 3D-сцена или Promise, пока грузится
+const DEV_TAGS = { dev: 'Разработка', event: 'Ивент', update: 'Обновление' };
+const store = {
+  get: (k) => {
+    try {
+      return localStorage.getItem(k);
+    } catch {
+      return null;
+    }
+  },
+  set: (k, v) => {
+    try {
+      localStorage.setItem(k, v);
+    } catch {
+      // без хранилища просто не запомним, что прочитано
+    }
+  },
+};
+const unreadDev = () => !!devlog?.posts?.length && store.get('devlog-read') !== devlog.posts[0].id;
 
 const THEMES = { sunset: 'Закат', night: 'Ночь', forest: 'Лес', ember: 'Огонь', mono: 'Графит' };
 const SORTS = { relevance: 'По релевантности', downloads: 'По загрузкам', follows: 'По подписчикам', newest: 'Сначала новые', updated: 'Недавно обновлённые' };
@@ -37,6 +57,8 @@ const ICONS = {
   check: 'M5 12l5 5 9-10',
   wand: 'M5 19L16 8M14 4v3M19 9h-3M18 5l-1.5 1.5M9 4l.7 1.8L11.5 6.5 9.7 7.2 9 9l-.7-1.8L6.5 6.5l1.8-.7z',
   save: 'M5 4h11l3 3v13H5zM8 4v5h7V4M8 20v-6h8v6',
+  box: 'M12 3l8 4.5v9L12 21l-8-4.5v-9zM4 7.5l8 4.5 8-4.5M12 12v9',
+  bell: 'M6 16V11a6 6 0 0 1 12 0v5l2 2H4zM10 20a2 2 0 0 0 4 0',
 };
 const KIND = { mods: 'Моды', resourcepacks: 'Ресурспаки', shaderpacks: 'Шейдеры' };
 const option = (map, value) => Object.entries(map).map(([v, label]) => h('option', { value: v, selected: v === value }, label));
@@ -135,10 +157,13 @@ async function refresh() {
 }
 
 async function loadRemote() {
-  pack = await call('packStatus').catch((e) => ({ error: e.message, configured: true }));
-  srv = S.config.serverAddress ? await call('ping').catch(() => null) : null;
+  [pack, srv, devlog] = await Promise.all([
+    call('packStatus').catch((e) => ({ error: e.message, configured: true })),
+    S.config.serverAddress ? call('ping').catch(() => null) : null,
+    call('devlog').catch(() => devlog),
+  ]);
   if (tab === 'home') render();
-  else renderSide();
+  else (renderSide(), renderTop());
   // Вышла новая версия сборки, а игра не запущена — докачиваем тихо, чтобы «Играть» запускал сразу
   const installed = S.instances.find((x) => x.id === S.packId)?.pack;
   if (pack?.updateAvailable && installed && S.config.bgUpdate !== false && !S.busy.includes(S.packId) && !S.running.includes(S.packId)) {
@@ -181,7 +206,7 @@ function confirmDialog(title, text, label, fn) {
 function render() {
   renderSide();
   renderTop();
-  ({ home: viewHome, mods: viewBrowse, packs: viewPacks, accounts: viewAccounts, settings: viewSettings })[tab]();
+  ({ home: viewHome, mods: viewBrowse, packs: viewPacks, dev: viewDev, accounts: viewAccounts, settings: viewSettings })[tab]();
 }
 
 function instStatus(i) {
@@ -207,13 +232,52 @@ function renderSide() {
     telegram && h('button.side-link', { onclick: () => act(() => call('openExternal', telegram)) }, icon('chat'), 'Telegram'),
     site && h('button.side-link', { onclick: () => act(() => call('openExternal', site)) }, icon('globe'), 'Сайт'),
     h('button.side-link', { onclick: () => act(() => call('openFolder')) }, icon('folder'), 'Папка лаунчера'),
-    h('button.ver', { title: 'Проверить обновления', onclick: manualUpdateCheck }, `Лаунчер ${S.version}`),
+    versionCard(),
   );
 }
 
+// Версия лаунчера и сборки на виду, с кнопками проверки обновлений
+function versionCard() {
+  const inst = S.instances.find((x) => x.id === S.packId);
+  const packText = !inst?.pack ? 'сборка не установлена' : pack?.updateAvailable ? `сборка ${inst.pack.version} → ${pack.latest}` : `сборка ${inst.pack.version}`;
+  return h('div.ver-card', {},
+    h('div.ver-head', {},
+      h('span.ver-badge', {}, `v${S.version}`),
+      h('span', {}, h('b', {}, 'ShizoLauncher'), h('small', { className: update || pack?.updateAvailable ? 'warn' : '' }, update ? `доступна ${update.version}` : packText)),
+    ),
+    h('div.ver-btns', {},
+      h(`button.mini${update ? '.hot' : ''}`, { title: 'Проверить обновления лаунчера', onclick: manualUpdateCheck }, icon('refresh', 15), 'Лаунчер'),
+      h(`button.mini${pack?.updateAvailable && inst?.pack ? '.hot' : ''}`, { title: 'Проверить обновления сборки сервера', onclick: manualPackCheck }, icon('box', 15), 'Сборка'),
+    ),
+  );
+}
+
+async function manualPackCheck() {
+  if (!S.config.packUrl) return toast('Адрес сборки не задан — укажи его в настройках', true);
+  toast('Проверяю сборку…');
+  await loadRemote();
+  if (pack?.error) return toast(`Не удалось проверить сборку: ${pack.error}`, true);
+  const inst = S.instances.find((x) => x.id === S.packId);
+  if (!inst?.pack) return (await select(S.packId), toast(`Сборка ${pack.latest} ещё не установлена — нажми «Установить»`));
+  if (!pack.updateAvailable) return toast(`Сборка актуальна — ${inst.pack.version}`);
+  dialog(`Обновление сборки ${pack.latest}`,
+    h('div.stack', {}, h('pre.changelog', {}, pack.changelog || 'Без описания.'), h('p.muted', {}, `Сейчас стоит ${inst.pack.version}. Скачаются только изменения, миры и настройки сохранятся в резервную копию.`)),
+    [closeBtn('Позже'), h('button.btn.primary', { disabled: S.running.includes(S.packId), onclick: () => (dlg.close(), updatePackNow()) }, 'Обновить сейчас')]);
+}
+
+async function updatePackNow() {
+  await select(S.packId);
+  S.busy.push(S.packId);
+  render();
+  const v = await act(() => call('prefetchPack'));
+  if (v) toast(`Сборка обновлена до ${v}`);
+  await refresh();
+  loadRemote();
+}
+
 function renderTop() {
-  const tabs = [['home', 'Главная'], ['mods', 'Моды'], ['packs', 'Модпаки']];
-  $('#tabs').replaceChildren(...tabs.map(([id, label]) => h(`button.pill${tab === id ? '.on' : ''}`, { onclick: () => go(id) }, label)));
+  const tabs = [['home', 'Главная'], ['mods', 'Моды'], ['packs', 'Модпаки'], ['dev', 'Разработка']];
+  $('#tabs').replaceChildren(...tabs.map(([id, label]) => h(`button.pill${tab === id ? '.on' : ''}`, { onclick: () => go(id) }, label, id === 'dev' && unreadDev() && h('span.new-dot', { title: 'Есть новые посты' }))));
   const acc = account();
   const pick = (id) => act(async () => (await call('setSettings', { selected: id }), (menuOpen = false), await refresh()));
   const item = (attrs, ...kids) => h('button.menu-item', { role: 'menuitem', ...attrs }, kids);
@@ -223,6 +287,8 @@ function renderTop() {
       h('button.acct.glass', { 'aria-haspopup': 'menu', 'aria-expanded': String(menuOpen), title: 'Аккаунты', onclick: () => ((menuOpen = !menuOpen), renderTop()) },
         avatar(acc), h('span', {}, h('b', {}, acc?.name ?? 'Нет аккаунта'), h('small', {}, acc ? accountLabel(acc) : 'Войти')), icon('chevron', 16)),
       menuOpen && h('div.menu.glass', { role: 'menu' },
+        acc && skinCard(acc),
+        acc && h('hr'),
         S.accounts.map((a) => item({ onclick: () => pick(a.id) }, avatar(a), h('span', {}, h('b', {}, a.name), h('small', {}, accountLabel(a))), a.id === S.config.selected && icon('check', 16))),
         S.accounts.length > 0 && h('hr'),
         item({ onclick: () => ((menuOpen = false), renderTop(), addAccount()) }, icon('plus'), 'Добавить аккаунт'),
@@ -230,6 +296,39 @@ function renderTop() {
       ),
     ),
     h('button.icon-btn.glass', { onclick: () => go('settings'), title: 'Настройки', 'aria-label': 'Настройки' }, icon('sliders', 20)),
+  );
+}
+
+// 3D-скин выбранного аккаунта в меню. Сцена строится один раз и переиспользуется при перерисовках меню.
+const SKIN_SITE = { ely: 'https://ely.by/', microsoft: 'https://www.minecraft.net/msaprofile/mygames/editskin', offline: 'https://ely.by/' };
+function skinCard(acc) {
+  let view3d = skinViews.get(acc.id);
+  if (view3d instanceof HTMLElement) queueMicrotask(() => view3d.start());
+  else {
+    const holder = h('div.skin3d.loading', {}, h('span.muted', {}, 'Загружаю скин…'));
+    if (!view3d) {
+      const p = call('skin', acc.id)
+        .catch(() => null)
+        .then((s) => SkinView.create(s?.data ?? SkinView.fallback(), !!s?.slim))
+        .then((el) => {
+          skinViews.set(acc.id, el);
+          const shown = $('.skin3d.loading');
+          if (shown?.dataset.acc === acc.id) (shown.replaceWith(el), el.start());
+          return el;
+        });
+      skinViews.set(acc.id, p);
+    }
+    holder.dataset.acc = acc.id;
+    view3d = holder;
+  }
+  const site = SKIN_SITE[acc.type];
+  return h('div.skin-card', {},
+    view3d,
+    h('div.skin-meta', {},
+      h('b', {}, acc.name),
+      h('small', {}, acc.type === 'offline' ? 'Скин берётся с Ely.by по нику' : accountLabel(acc)),
+      site && h('button.link', { onclick: () => act(() => call('openExternal', site)) }, acc.type === 'offline' ? 'Поставить скин на Ely.by' : 'Сменить скин'),
+    ),
   );
 }
 
@@ -757,6 +856,49 @@ async function newInstance() {
   dlg.showModal();
 }
 
+// ---------- разработка: превью будущих обновлений, ивенты ----------
+const postDate = (p) => (p.date ? new Date(p.date).toLocaleDateString('ru', { day: 'numeric', month: 'long', year: 'numeric' }) : '');
+function media(m, cls = '') {
+  return m.type === 'video'
+    ? h(`video${cls}`, { src: m.src, muted: true, loop: true, autoplay: true, playsInline: true, controls: !cls, preload: 'metadata' })
+    : h(`img${cls}`, { src: m.src, alt: '', loading: 'lazy' });
+}
+
+function viewDev() {
+  const posts = devlog?.posts ?? [];
+  if (posts.length) store.set('devlog-read', posts[0].id); // открыл вкладку — всё прочитано
+  queueMicrotask(renderTop);
+  const [top, ...rest] = posts;
+  const card = (p, big) =>
+    h(`article.post.glass${big ? '.big' : ''}`, { tabIndex: 0, role: 'button', onclick: () => openPost(p), onkeydown: (e) => e.key === 'Enter' && openPost(p) },
+      p.media[0] ? h('div.post-media', {}, media(p.media[0], '.cover'), p.media.length > 1 && h('span.chip.count', {}, `+${p.media.length - 1}`)) : h('div.post-media.empty-media', {}, h('img', { src: 'assets/sz.webp', alt: '' })),
+      h('div.post-body', {},
+        h('div.chips', {}, h(`span.chip.tag-${p.tag}`, {}, DEV_TAGS[p.tag]), p.date && h('span.muted', {}, postDate(p))),
+        h('h3', {}, p.title),
+        p.text && h('p.post-text', {}, p.text),
+      ));
+  fill(view,
+    h('div.panel-head', {}, h('h2', {}, 'Разработка'), h('button.btn', { onclick: () => act(async () => ((devlog = await call('devlog')), render(), toast('Лента обновлена'))) }, icon('refresh', 16), 'Обновить')),
+    h('p.sub', {}, 'Что готовят админы: превью будущих обновлений, ивенты и новости сервера.'),
+    !devlog && h('div.empty', {}, 'Загружаю…'),
+    devlog && !posts.length && h('section.panel.glass', {}, h('div.empty', {}, 'Постов пока нет. Когда админы расскажут о будущих обновлениях, они появятся здесь — и придёт уведомление.')),
+    top && card(top, true),
+    rest.length > 0 && h('div.posts', {}, rest.map((p) => card(p))),
+  );
+  if (!devlog) call('devlog').then((d) => ((devlog = d), tab === 'dev' && render()), (e) => tab === 'dev' && fill(view, h('h2', {}, 'Разработка'), h('div.empty', {}, `Не удалось загрузить ленту: ${e.message}`)));
+}
+
+function openPost(p) {
+  dlg.classList.add('wide');
+  dialog(p.title,
+    h('div.stack.post-full', {},
+      h('div.chips', {}, h(`span.chip.tag-${p.tag}`, {}, DEV_TAGS[p.tag]), p.date && h('span.muted', {}, postDate(p))),
+      p.media.map((m) => media(m)),
+      p.text && h('p.post-text.full', {}, p.text),
+    ),
+    [closeBtn('Закрыть')]);
+}
+
 // ---------- аккаунты ----------
 function viewAccounts() {
   const sel = S.config.selected;
@@ -903,6 +1045,18 @@ function viewSettings() {
       ),
     ),
     h('section.panel.glass', {},
+      h('h3', {}, 'Фоновая работа и уведомления'),
+      h('label.check', {}, h('input', { type: 'checkbox', checked: !!cfg.autostart, onchange: (e) => set(e.target.checked ? { autostart: true, closeToTray: true } : { autostart: false }).then(() => viewSettings()) }), 'Запускать вместе с Windows — свёрнутым в трей'),
+      h('label.check', {}, h('input', { type: 'checkbox', checked: !!cfg.closeToTray, onchange: (e) => set({ closeToTray: e.target.checked }) }), 'Крестик сворачивает лаунчер в трей, а не закрывает'),
+      h('p.muted', {}, 'В трее лаунчер заранее докачивает обновления сборки и присылает уведомления. Закрыть совсем — правой кнопкой по значку в трее → «Выйти».'),
+      h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.notifications !== false, onchange: (e) => set({ notifications: e.target.checked }).then(() => viewSettings()) }), h('b', {}, 'Уведомления')),
+      h('div.notify-list', {},
+        [['launcher', 'Обновления лаунчера'], ['pack', 'Обновления сборки сервера'], ['news', 'Новости и ивенты сервера'], ['devlog', 'Посты о разработке']].map(([k, label]) =>
+          h('label.check', {}, h('input', { type: 'checkbox', disabled: cfg.notifications === false, checked: cfg.notify?.[k] !== false, onchange: (e) => set({ notify: { ...cfg.notify, [k]: e.target.checked } }).then(() => (cfg.notify = S.config.notify)) }), label)),
+      ),
+      h('div.actions', {}, h('button.btn', { disabled: cfg.notifications === false, onclick: () => act(() => call('testNotification')) }, icon('bell', 16), 'Показать пример уведомления')),
+    ),
+    h('section.panel.glass', {},
       h('h3', {}, 'Диагностика и кэш'),
       h('div.row', {}, h('div.body', {}, h('b', {}, `Лаунчер ${S.version}`), h('span', {}, update ? `Доступна версия ${update.version}` : 'Обновления проверяются при запуске и каждые 30 минут')), h('button.btn', { onclick: manualUpdateCheck }, icon('refresh', 16), 'Проверить обновления')),
       h('div.actions', {},
@@ -955,6 +1109,16 @@ api.on('game', (g) => {
   else renderSide();
 });
 
+// Клик по уведомлению или пункту меню в трее
+api.on('navigate', ({ tab: to, post, action } = {}) => {
+  if (action === 'checkUpdate') return manualUpdateCheck();
+  if (to === 'home') return select(S.packId);
+  if (to) go(to);
+  const p = post && devlog?.posts?.find((x) => x.id === post);
+  if (p) openPost(p);
+  else if (to === 'dev') call('devlog').then((d) => ((devlog = d), tab === 'dev' && render(), post && d.posts.find((x) => x.id === post) && openPost(d.posts.find((x) => x.id === post))), () => {});
+});
+
 // Автодиагностика: что нашлось в журнале упавшей игры и что с этим делать
 function crashReport(g) {
   if (!g.problems?.length) return toast(`Игра завершилась с ошибкой (код ${g.code}). Подробности — во вкладке «Консоль».`, true);
@@ -1002,7 +1166,6 @@ document.addEventListener('click', () => menuOpen && ((menuOpen = false), render
 document.addEventListener('keydown', (e) => e.key === 'Escape' && menuOpen && ((menuOpen = false), renderTop()));
 
 refresh().then(loadRemote);
-// Обновление лаунчера: тихо проверяем при старте, кнопка появится наверху
 // Обновление лаунчера: при старте и каждые 30 минут — лаунчер часто держат открытым сутками
 const checkLauncherUpdate = () => call('checkUpdate').then((u) => ((update = u ?? null), renderTop(), u));
 checkLauncherUpdate().catch(() => {});

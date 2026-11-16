@@ -1,7 +1,7 @@
-// Единственная дверь из окна в главный процесс: вызов метода по имени и подписка на 3 события.
+// Единственная дверь из окна в главный процесс: вызов метода по имени и подписка на 4 события.
 const { contextBridge, ipcRenderer } = require('electron');
 
-const EVENTS = ['progress', 'log', 'game'];
+const EVENTS = ['progress', 'log', 'game', 'navigate'];
 
 contextBridge.exposeInMainWorld('api', {
   call: (name, ...args) => ipcRenderer.invoke('api', name, ...args),
