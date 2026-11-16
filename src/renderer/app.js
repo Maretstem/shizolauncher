@@ -139,6 +139,13 @@ async function loadRemote() {
   srv = S.config.serverAddress ? await call('ping').catch(() => null) : null;
   if (tab === 'home') render();
   else renderSide();
+  // Вышла новая версия сборки, а игра не запущена — докачиваем тихо, чтобы «Играть» запускал сразу
+  const installed = S.instances.find((x) => x.id === S.packId)?.pack;
+  if (pack?.updateAvailable && installed && S.config.bgUpdate !== false && !S.busy.includes(S.packId) && !S.running.includes(S.packId)) {
+    call('prefetchPack')
+      .then((v) => v && (toast(`Сборка обновлена до ${v} в фоне — миры и настройки сохранены в резервную копию`), refresh().then(loadRemote)))
+      .catch(() => {}); // не вышло — обновится при нажатии «Играть»
+  }
 }
 
 function avatar(acc) {
@@ -273,16 +280,31 @@ function playButton(i) {
   return h('button.play', { disabled: blocked, onclick: () => play(i.id) }, icon('play', 22), label);
 }
 
-async function play(id) {
+async function play(id, force) {
   if (!account()) {
     toast('Сначала добавь аккаунт');
     return go('accounts');
   }
   S.busy.push(id);
   render();
-  await act(() => call('play', id));
+  const r = await act(() => call('play', id, force));
   await refresh();
   loadRemote();
+  if (r?.problems) modProblems(id, r.problems, true);
+}
+
+// Что нашла проверка модов. canPlay — показать кнопку «Всё равно играть».
+function modProblems(id, problems, canPlay) {
+  dlg.classList.add('wide');
+  dialog(problems.length ? `Проверка модов: найдено проблем — ${problems.length}` : 'Проверка модов: всё в порядке',
+    h('div.stack', {},
+      h('p.muted', {}, 'Это то, из-за чего игра обычно вылетает при запуске. Лучше исправить сейчас, чем ждать вылета.'),
+      h('div.rows.scroll', {}, problems.map((p, n) => h('div.row', {}, h('span.n', {}, String(n + 1).padStart(2, '0')), h('div.body', {}, h('b.wrap', {}, p.text), h('span.wrap', {}, p.fix))))),
+    ),
+    [
+      canPlay && h('button.btn', { onclick: () => (dlg.close(), play(id, true)) }, 'Всё равно играть'),
+      h('button.btn.primary', { onclick: () => (dlg.close(), select(id).then(() => ((sub = 'mods'), render()))) }, 'Открыть моды'),
+    ]);
 }
 
 function paintProgress() {
@@ -325,6 +347,7 @@ function viewHome() {
     ),
     i.isPack ? h('img.hero-logo', { src: 'assets/logo.webp', alt: S.config.serverName }) : h('h1', {}, tile(i), i.name),
     h('p.sub', {}, subtitle(i)),
+    i.isPack && srv?.players?.length > 0 && h('div.online', {}, h('span.muted', {}, 'Сейчас играют:'), srv.players.map((n) => h('span.chip', {}, h('img', { src: `https://mc-heads.net/avatar/${encodeURIComponent(n)}/32`, alt: '', onerror: (e) => e.target.remove() }), n)), srv.online > srv.players.length && h('span.muted', {}, `и ещё ${srv.online - srv.players.length}`)),
     h('div.actions', {},
       playButton(i),
       h('div.box.glass', {}, h('small', {}, i.isPack ? 'Сборка' : 'Версия'), h('b', {}, i.isPack ? (i.pack?.version ?? pack?.latest ?? '—') : `${i.mc} · ${loaderLabel(i)}`)),
@@ -442,14 +465,17 @@ function panelOverview(i) {
     logBox(i.id, 8),
   );
   const past = (i.isPack && pack?.history) || [];
-  const notes = i.isPack && (pack?.changelog || past.length);
+  const news = (i.isPack && pack?.news) || [];
+  const notes = i.isPack && (pack?.changelog || past.length || news.length);
   view.append(notes
-    ? h('div.cols', {}, main, h('section.panel.glass', {},
+    ? h('div.cols', {}, main, h('div.side-stack', {},
+      news.length > 0 && h('section.panel.glass', {}, h('h3', {}, 'Новости сервера'), h('div.history', {}, news.map((n) => h('div', {}, n.date && h('span.muted', {}, new Date(n.date).toLocaleDateString('ru')), h('pre.changelog', {}, n.text))))),
+      h('section.panel.glass', {},
         h('h3', {}, `Что нового в ${pack.latest}`),
         h('pre.changelog', {}, pack.changelog || 'Без описания.'),
         past.length > 1 && h('h3', {}, 'Прошлые версии'),
         past.length > 1 && h('div.history', {}, past.filter((p) => p.version !== pack.latest).map((p) => h('div', {}, h('b', {}, p.version), h('span.muted', {}, p.date ? ` · ${new Date(p.date).toLocaleDateString('ru')}` : ''), h('pre.changelog', {}, p.changelog || 'Без описания.')))),
-      ))
+      )))
     : main);
 }
 
@@ -462,7 +488,7 @@ async function repair(id) {
 }
 
 async function panelContent(i, kind) {
-  const section = h('section.panel.glass', {}, h('div.panel-head', {}, h('h3', {}, KIND[kind]), h('button.btn', { onclick: () => ((browse.type = Object.keys(TYPE_KIND).find((t) => TYPE_KIND[t] === kind)), go('mods')) }, icon('plus', 16), 'Найти на Modrinth')));
+  const section = h('section.panel.glass', {}, h('div.panel-head', {}, h('h3', {}, KIND[kind]), h('div.inline', {}, kind === 'mods' && i.loader && h('button.btn', { onclick: () => act(async () => { const r = await call('checkMods', i.id); r.problems.length ? modProblems(i.id, r.problems, false) : toast(`Проверено модов: ${r.checked} — проблем не найдено`); }) }, icon('check', 16), 'Проверить моды'), h('button.btn', { onclick: () => ((browse.type = Object.keys(TYPE_KIND).find((t) => TYPE_KIND[t] === kind)), go('mods')) }, icon('plus', 16), 'Найти на Modrinth'))));
   view.append(section);
   // Для своих экземпляров моды опознаются на Modrinth — так видно, что можно обновить. Сборку сервера обновляют админы.
   const smart = kind === 'mods' && !i.isPack;
@@ -536,6 +562,61 @@ function panelOptions(i) {
       ),
     ),
   );
+  panelExtras(i);
+}
+
+// Режим слабого ПК, перенос из других лаунчеров и резервные копии
+async function panelExtras(i) {
+  const low = !!i.lowEnd;
+  const toggleLow = (btn) => act(async () => {
+    btn.disabled = true;
+    toast(low ? 'Возвращаю прежние настройки…' : 'Ставлю моды оптимизации и облегчаю графику…');
+    const r = await call('lowEnd', i.id, !low);
+    toast(low ? 'Режим слабого ПК выключен — всё как было' : `Режим слабого ПК включён${r?.added?.length ? `: добавлено модов — ${r.added.length}` : ''}${r?.skipped?.length ? `, недоступны для этой версии: ${r.skipped.join(', ')}` : ''}`);
+    await refresh();
+  });
+  const backups = h('div.rows');
+  const section = h('section.panel.glass', {},
+    h('div.row', {},
+      h('div.body', {}, h('b', {}, 'Режим слабого ПК'), h('span.wrap', {}, i.loader ? 'Добавит моды оптимизации (Sodium, Lithium, FerriteCore и др.) и облегчит графику: дальность 6 чанков, быстрая графика, без теней и облаков. Выключение вернёт всё как было.' : 'Облегчит графику: дальность 6 чанков, быстрая графика, без теней и облаков. Моды оптимизации нужен загрузчик модов.')),
+      h('button.switch', { role: 'switch', 'aria-checked': String(low), 'aria-label': 'Режим слабого ПК', onclick: (e) => toggleLow(e.currentTarget) }),
+    ),
+    h('div.row', {},
+      h('div.body', {}, h('b', {}, 'Перенос из другого лаунчера'), h('span.wrap', {}, 'Миры, скриншоты, ресурспаки и настройки из TLauncher, Prism, CurseForge, Modrinth и других. Ничего не перезаписывается.')),
+      h('button.btn', { onclick: () => importDialog(i) }, 'Перенести…'),
+    ),
+    h('div.panel-head', {}, h('h3', {}, 'Резервные копии миров и настроек'), h('button.btn', { onclick: () => act(async () => { toast((await call('makeBackup', i.id)) ? 'Копия сохранена' : 'Пока нечего сохранять — миров и настроек ещё нет'); drawBackups(); }) }, 'Сделать копию')),
+    h('p.muted', {}, i.isPack ? 'Копия делается сама перед каждым обновлением сборки. Хранятся последние 5.' : 'Хранятся последние 5 копий.'),
+    backups,
+  );
+  view.append(section);
+  const drawBackups = async () => {
+    const list = (await act(() => call('listBackups', i.id))) ?? [];
+    backups.replaceChildren(...(list.length ? list.map((b) => h('div.row', {},
+      h('div.body', {}, h('b', {}, new Date(b.at).toLocaleString('ru')), h('span', {}, `${b.label} · ${b.items.join(', ')}`)),
+      h('button.btn', { onclick: () => confirmDialog('Восстановить копию?', `Миры и настройки вернутся к состоянию на ${new Date(b.at).toLocaleString('ru')}. Текущие перед этим тоже сохранятся в копию — откат можно отменить.`, 'Восстановить', async () => { await call('restoreBackup', i.id, b.name); toast('Восстановлено'); drawBackups(); }) }, 'Восстановить'),
+    )) : [h('div.empty', {}, 'Копий пока нет.')]));
+  };
+  drawBackups();
+}
+
+async function importDialog(i) {
+  dialog('Перенос из другого лаунчера', h('p.muted', {}, 'Ищу другие лаунчеры на компьютере…'), [closeBtn()]);
+  const sources = (await act(() => call('importSources'))) ?? [];
+  if (!dlg.open) return;
+  if (!sources.length) return dialog('Перенос из другого лаунчера', h('p.muted', {}, 'Не нашёл других лаунчеров с мирами или скриншотами. Поддерживаются TLauncher, официальный лаунчер, Prism, MultiMC, CurseForge, Modrinth App, ATLauncher, FreesmLauncher.'), [closeBtn('Понятно')]);
+  const pick = h('select', { 'aria-label': 'Откуда переносить' }, sources.map((s) => h('option', { value: s.index }, `${s.launcher} · ${s.name} — миров: ${s.worlds}, скриншотов: ${s.shots}`)));
+  const opts = h('input', { type: 'checkbox' });
+  dialog(`Перенос в «${i.name}»`,
+    h('div.stack', {}, h('label.field', {}, 'Откуда', pick), h('label.check', {}, opts, 'Перенести и настройки игры (управление, графика, звук) — заменят текущие'), h('p.muted', {}, 'Миры с одинаковыми названиями не перезапишутся — к новым добавится «(перенос)».')),
+    [closeBtn(), h('button.btn.primary', { onclick: (e) => {
+      e.currentTarget.disabled = true;
+      act(async () => {
+        const r = await call('importFrom', Number(pick.value), i.id, opts.checked);
+        dlg.close();
+        toast(`Перенесено: миров — ${r.worlds}, скриншотов — ${r.shots}, ресурспаков — ${r.packs}${r.options ? ', настройки' : ''}`);
+      });
+    } }, 'Перенести')]);
 }
 
 // ---------- Modrinth: моды для выбранного экземпляра ----------
@@ -816,6 +897,9 @@ function viewSettings() {
         h('button.btn.primary', { onclick: runCheckup }, 'Проверить всё'),
         h('button.btn', { onclick: () => act(async () => { const r = await call('cleanCache'); toast(r.files ? `Удалено файлов: ${r.files}, освобождено ${mb(r.bytes)}` : 'Чистить нечего — кэш в порядке'); }) }, 'Очистить кэш'),
         h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.autoClean, onchange: (e) => set({ autoClean: e.target.checked }) }), 'Чистить кэш при каждом запуске'),
+        h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.bgUpdate !== false, onchange: (e) => set({ bgUpdate: e.target.checked }) }), 'Обновлять сборку в фоне, пока лаунчер открыт'),
+        h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.modCheck !== false, onchange: (e) => set({ modCheck: e.target.checked }) }), 'Проверять моды перед запуском'),
+        h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.discordPresence !== false, onchange: (e) => set({ discordPresence: e.target.checked }) }), 'Показывать в Discord, что я играю'),
       ),
       h('p.muted', {}, 'Чистка убирает недокачанные файлы, журналы игры старше недели и отчёты о вылетах старше месяца. Миры, моды, скриншоты и настройки не трогает.'),
       h('div.rows', { id: 'checkup' }),

@@ -59,7 +59,9 @@ export async function ping(address, timeout = 4000) {
         const id = readVarint(buf, len[1]);
         const str = readVarint(buf, id[1]);
         const s = JSON.parse(buf.subarray(str[1], str[1] + str[0]).toString());
-        resolve({ online: s.players?.online ?? 0, max: s.players?.max ?? 0, motd: text(s.description).trim(), version: s.version?.name ?? '', latency: Date.now() - started });
+        // sample — ники игроков онлайн (сервер отдаёт до 12; некоторые серверы прячут их или пишут туда текст)
+        const players = (s.players?.sample ?? []).map((p) => text(p.name).trim()).filter((n) => /^[A-Za-z0-9_]{2,16}$/.test(n));
+        resolve({ online: s.players?.online ?? 0, max: s.players?.max ?? 0, players, motd: text(s.description).trim(), version: s.version?.name ?? '', latency: Date.now() - started });
       } catch (e) {
         reject(e);
       }

@@ -8,5 +8,6 @@
     "telegram": "https://t.me/shizostan",
     "site": ""
   },
-  "updateRepo": "Maretstem/shizolauncher"
+  "updateRepo": "Maretstem/shizolauncher",
+  "discordClientId": ""
 }

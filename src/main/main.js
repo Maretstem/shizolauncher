@@ -14,6 +14,11 @@ import * as modrinth from './core/modrinth.js';
 import { readJson, useFetch, writeJson } from './core/net.js';
 import { PACK_ID, packStatus, syncPack } from './core/pack.js';
 import { checkUpdate, downloadUpdate } from './core/update.js';
+import { listBackups, makeBackup, restoreBackup } from './core/backup.js';
+import { showPresence } from './core/discord.js';
+import { findSources, importFrom } from './core/importer.js';
+import { disableLowEnd, enableLowEnd } from './core/lowend.js';
+import { checkMods } from './core/modcheck.js';
 import { parseAddress, ping } from './core/ping.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -24,7 +29,7 @@ app.setPath('userData', path.join(ROOT, 'electron'));
 useFetch((url, init) => net.fetch(url, init));
 
 const brand = JSON.parse(readFileSync(path.join(here, '../../launcher.config.json'), 'utf8'));
-const DEFAULTS = { memory: 4096, javaPath: '', jvmArgs: '', autoJoin: true, selected: null, current: PACK_ID, theme: 'sunset', accent: '', bgImage: '', bgBlur: 0, bgDim: 45, autoClean: true };
+const DEFAULTS = { memory: 4096, javaPath: '', jvmArgs: '', autoJoin: true, selected: null, current: PACK_ID, theme: 'sunset', accent: '', bgImage: '', bgBlur: 0, bgDim: 45, autoClean: true, bgUpdate: true, discordPresence: true, modCheck: true };
 const HOSTS = { 'Серверы Minecraft': 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json', Fabric: 'https://meta.fabricmc.net/v2/versions/loader', Modrinth: 'https://api.modrinth.com/v2/tag/loader', 'Ely.by': 'https://authserver.ely.by/' };
 // Картинки с диска (скриншоты, свой фон) окно получает только через эту схему — прямого доступа к файлам у него нет
 protocol.registerSchemesAsPrivileged([{ scheme: 'shizo', privileges: { standard: true, secure: true } }]);
@@ -33,6 +38,18 @@ const settingsFile = path.join(ROOT, 'settings.json');
 const accountsFile = path.join(ROOT, 'accounts.bin');
 
 let win;
+let importList = []; // найденные папки других лаунчеров: окну отдаём номер, а не путь
+
+// Обновляет сборку сервера; если версия меняется — сначала сохраняет миры и настройки
+async function updatePack(opts) {
+  const cfg = config();
+  const status = await packStatus(ROOT, cfg.packUrl);
+  if (status.installed && status.latest && status.installed !== status.latest) {
+    opts.onProgress?.({ label: 'Сохраняю миры и настройки', files: 0, totalFiles: 1, bytes: 0, totalBytes: 0 });
+    await makeBackup(ROOT, PACK_ID, `перед обновлением сборки до ${status.latest}`);
+  }
+  return syncPack(ROOT, cfg.packUrl, opts);
+}
 let settings = {};
 let accounts = [];
 const jobs = new Map(); // id -> AbortController
@@ -234,7 +251,8 @@ const handlers = {
   ping: () => ping(config().serverAddress).catch(() => ping(config().serverAddress)),
 
   // --- игра ---
-  play(id) {
+  // force — запустить, даже если проверка модов нашла проблемы
+  play(id, force) {
     if (games.has(id)) throw new Error('Игра уже запущена');
     return job(id, async (opts) => {
       const cfg = config();
@@ -249,7 +267,7 @@ const handlers = {
 
       if (id === PACK_ID && cfg.packUrl) {
         try {
-          await syncPack(ROOT, cfg.packUrl, opts);
+          await updatePack(opts);
         } catch (e) {
           // Без сети играем на уже установленной сборке
           if (opts.signal.aborted || !(await instances.getInstance(ROOT, id))?.pack) throw e;
@@ -258,6 +276,11 @@ const handlers = {
       }
       const inst = await instances.getInstance(ROOT, id);
       if (!inst) throw new Error(id === PACK_ID ? 'Сборка сервера ещё не настроена: укажи адрес pack.json в настройках' : 'Экземпляр не найден');
+      if (!force && cfg.modCheck !== false && inst.loader) {
+        opts.onProgress({ label: 'Проверяю моды', files: 0, totalFiles: 1, bytes: 0, totalBytes: 0 });
+        const check = await checkMods(instances.gameDir(ROOT, id), inst.loader.type);
+        if (check.problems.length) return { problems: check.problems }; // окно спросит игрока, запускать ли всё равно
+      }
 
       account = await freshAccount(account, cfg);
       accounts = accounts.map((a) => (a.id === account.id ? account : a));
@@ -278,7 +301,9 @@ const handlers = {
         onLog: log,
       });
       games.set(id, child);
+      let presence = null;
       const ended = (code) => {
+        presence?.stop();
         if (games.delete(id)) send('game', { id, running: false, code, problems: code ? diagnose(tail.join('')) : [] });
       };
       child.on('error', (e) => {
@@ -288,6 +313,17 @@ const handlers = {
       child.on('exit', ended);
       await instances.updateInstance(ROOT, id, { lastPlayed: Date.now() });
       send('game', { id, running: true });
+      if (cfg.discordPresence !== false && games.has(id)) {
+        const onServer = id === PACK_ID;
+        presence = await showPresence(cfg.discordClientId, {
+          details: onServer ? `Играет на ${cfg.serverName}` : 'Играет в Minecraft',
+          state: onServer ? cfg.serverAddress || undefined : `${inst.name} · ${inst.mc}`,
+          timestamps: { start: Date.now() },
+          assets: { large_image: 'logo', large_text: cfg.serverName },
+          buttons: cfg.links?.discord ? [{ label: `Discord ${cfg.serverName}`, url: cfg.links.discord }] : undefined,
+        }).catch(() => null);
+        if (!games.has(id)) presence?.stop(); // игра успела закрыться, пока подключались к Discord
+      }
     });
   },
   stop: (id) => void games.get(id)?.kill(),
@@ -298,7 +334,7 @@ const handlers = {
     job(id, async (opts) => {
       const cfg = config();
       let restored = 0;
-      if (id === PACK_ID && cfg.packUrl) restored += (await syncPack(ROOT, cfg.packUrl, opts)).restored;
+      if (id === PACK_ID && cfg.packUrl) restored += (await updatePack(opts)).restored;
       const inst = await instances.getInstance(ROOT, id);
       if (!inst) throw new Error('Экземпляр не найден');
       const javaPath = inst.javaPath || cfg.javaPath;
@@ -307,6 +343,52 @@ const handlers = {
       restored += (await install(ROOT, versionId, { ...opts, full: true, javaPath })).restored;
       return { restored };
     }),
+
+  // --- проверка модов, резервные копии, фоновое обновление ---
+  async checkMods(id) {
+    const inst = await instances.getInstance(ROOT, id);
+    return checkMods(instances.gameDir(ROOT, id), inst?.loader?.type);
+  },
+  // Тихо докачивает новую версию сборки, пока лаунчер открыт и игра не запущена
+  prefetchPack() {
+    const cfg = config();
+    if (!cfg.packUrl || games.has(PACK_ID) || jobs.has(PACK_ID)) return null;
+    return job(PACK_ID, async (opts) => {
+      if (!(await instances.getInstance(ROOT, PACK_ID))?.pack) return null; // ещё не установлена — ставит сам игрок
+      return (await updatePack(opts)).pack.version;
+    });
+  },
+  listBackups: (id) => listBackups(ROOT, id),
+  makeBackup: (id) => makeBackup(ROOT, id, 'вручную'),
+  restoreBackup(id, name) {
+    if (games.has(id) || jobs.has(id)) throw new Error('Сначала закрой игру');
+    return restoreBackup(ROOT, id, name);
+  },
+
+  // --- перенос из других лаунчеров ---
+  async importSources() {
+    importList = await findSources();
+    return importList.map((s, index) => ({ ...s, index }));
+  },
+  importFrom(index, id, options) {
+    const src = importList[index];
+    if (!src) throw new Error('Источник не найден — обнови список');
+    if (games.has(id)) throw new Error('Сначала закрой игру');
+    return job(`import:${id}`, () => importFrom(src.dir, instances.gameDir(ROOT, id), { options: !!options }));
+  },
+
+  // --- режим слабого ПК ---
+  lowEnd(id, on) {
+    if (games.has(id)) throw new Error('Сначала закрой игру');
+    return job(`lowend:${id}`, async (opts) =>
+      on
+        ? enableLowEnd(ROOT, id, {
+            install: (projectId) => modrinth.installProject(ROOT, id, projectId, 'mod', opts),
+            installed: new Set((await modrinth.contentInfo(ROOT, id).catch(() => [])).map((m) => m.projectId).filter(Boolean)),
+          })
+        : disableLowEnd(ROOT, id),
+    );
+  },
 
   // --- Modrinth ---
   search: (params) => modrinth.search(params),

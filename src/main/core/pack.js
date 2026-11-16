@@ -38,7 +38,7 @@ export async function packStatus(root, url) {
   if (!url) return { installed, configured: false };
   try {
     const m = await fetchPack(url);
-    return { installed, configured: true, latest: m.version, minecraft: m.minecraft, loader: m.loader ?? null, changelog: m.changelog ?? '', history: Array.isArray(m.history) ? m.history : [], updateAvailable: installed !== m.version };
+    return { installed, configured: true, latest: m.version, minecraft: m.minecraft, loader: m.loader ?? null, changelog: m.changelog ?? '', history: Array.isArray(m.history) ? m.history : [], news: Array.isArray(m.news) ? m.news.slice(0, 5) : [], updateAvailable: installed !== m.version };
   } catch (e) {
     return { installed, configured: true, error: e.message };
   }

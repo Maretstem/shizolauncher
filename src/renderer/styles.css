@@ -257,3 +257,10 @@ dialog.wide { width: min(980px, 92vw); }
 .tool.danger:hover { box-shadow: inset 0 0 0 1px var(--bad); }
 @media (prefers-reduced-motion: reduce) { .tool { transition: none; } .tool:hover { transform: none; } }
 .way.off { opacity: 0.55; cursor: default; }
+
+/* ---- онлайн, новости, проверка модов ---- */
+.online { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: -6px; }
+.online .chip img { width: 18px; height: 18px; border-radius: 4px; image-rendering: pixelated; }
+.side-stack { display: flex; flex-direction: column; gap: 18px; }
+.rows.scroll { max-height: 50vh; overflow-y: auto; }
+.row .body b.wrap { white-space: normal; }

@@ -467,3 +467,176 @@ test('сборка: выключенный мод остаётся выключ�
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test('проверка модов: зависимости, дубли, несовместимости с версиями, чужой загрузчик', async () => {
+  const fs = await import('node:fs/promises');
+  const os = await import('node:os');
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const { checkMods, satisfies } = await import('../src/main/core/modcheck.js');
+  const TAR = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shizo-mc-'));
+  const mods = path.join(root, 'mods');
+  await fs.mkdir(mods);
+  // Собирает настоящий jar (zip) с описанием мода
+  const jar = async (file, files) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'shizo-jar-'));
+    for (const [name, body] of Object.entries(files)) {
+      await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
+      await fs.writeFile(path.join(dir, name), typeof body === 'string' ? body : JSON.stringify(body));
+    }
+    await promisify(execFile)(TAR, ['-a', '-cf', path.join(mods, file.replace(/\.disabled$/, '') + '.zip'), '-C', dir, ...Object.keys(files)]); // без «./» в именах — как в настоящих jar
+    await fs.rename(path.join(mods, file.replace(/\.disabled$/, '') + '.zip'), path.join(mods, file));
+    await fs.rm(dir, { recursive: true, force: true });
+  };
+  try {
+    await jar('api.jar', { 'fabric.mod.json': { id: 'fabric-api', version: '0.141.0', jars: [] } });
+    await jar('iris.jar', { 'fabric.mod.json': { id: 'iris', version: '1.8.1', depends: { sodium: '*' } } });
+    await jar('sodium.jar', { 'fabric.mod.json': { id: 'sodium', version: '0.8.15', breaks: { iris: '<1.8', optifabric: '*' } } });
+    await jar('needs.jar', { 'fabric.mod.json': { id: 'needs', name: 'Needs', version: '1.0', depends: { 'fabric-api': '*', 'cloth-config': '>=1' } } });
+    await jar('dup-a.jar', { 'fabric.mod.json': { id: 'dup', version: '1' } });
+    await jar('dup-b.jar', { 'fabric.mod.json': { id: 'dup', version: '2' } });
+    await jar('forgeonly.jar', { 'META-INF/mods.toml': 'modLoader="javafml"\n[[mods]]\nmodId="create"\n' });
+    await jar('broken.jar.disabled', { 'fabric.mod.json': { id: 'off', depends: { nothing: '*' } } }); // выключен — не проверяется
+    const r = await checkMods(root, 'fabric');
+    const texts = r.problems.map((p) => p.text);
+    assert.equal(r.checked, 7);
+    assert.ok(texts.some((t) => /Needs.*не хватает: cloth-config/.test(t)), texts.join('\n'));
+    assert.ok(texts.some((t) => /«dup» установлен 2 раза/.test(t)), texts.join('\n'));
+    assert.ok(texts.some((t) => /create.*сделан для Forge/.test(t)), texts.join('\n'));
+    assert.ok(!texts.some((t) => /iris/.test(t)), 'iris 1.8.1 не попадает под «<1.8» — тревоги быть не должно');
+    assert.equal(r.problems.length, 3, texts.join('\n'));
+    assert.equal(satisfies('1.7.9', '<1.8'), true);
+    assert.equal(satisfies('0.8.15-beta.1+mc1.21.11', '>=0.8.15'), false); // бета раньше релиза
+    assert.equal(satisfies('непонятная-версия', '<1'), true); // не понимаем — не пугаем
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('резервные копии: сохранить, восстановить, хранить последние 5', async () => {
+  const fs = await import('node:fs/promises');
+  const os = await import('node:os');
+  const { makeBackup, listBackups, restoreBackup } = await import('../src/main/core/backup.js');
+  const { createInstance, gameDir } = await import('../src/main/core/instances.js');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shizo-bk-'));
+  try {
+    const inst = await createInstance(root, { name: 'T', mc: '1.21.11' });
+    const g = gameDir(root, inst.id);
+    assert.equal(await makeBackup(root, inst.id, 'пусто'), null); // нечего сохранять
+    await fs.mkdir(path.join(g, 'saves', 'Мир'), { recursive: true });
+    await fs.writeFile(path.join(g, 'saves', 'Мир', 'level.dat'), 'v1');
+    await fs.writeFile(path.join(g, 'options.txt'), 'fov:70');
+    const first = await makeBackup(root, inst.id, 'перед обновлением', 1000);
+    await fs.writeFile(path.join(g, 'saves', 'Мир', 'level.dat'), 'v2-сломано');
+    await fs.mkdir(path.join(g, 'saves', 'Новый'), { recursive: true });
+    await restoreBackup(root, inst.id, first);
+    assert.equal(await fs.readFile(path.join(g, 'saves', 'Мир', 'level.dat'), 'utf8'), 'v1');
+    assert.deepEqual(await fs.readdir(path.join(g, 'saves')), ['Мир']);
+    const list = await listBackups(root, inst.id);
+    assert.equal(list[0].label, 'перед восстановлением'); // откат тоже можно отменить
+    for (let n = 0; n < 6; n++) await makeBackup(root, inst.id, `#${n}`, Date.now() + 1000 + n);
+    assert.equal((await listBackups(root, inst.id)).length, 5);
+    await assert.rejects(restoreBackup(root, inst.id, '../x'), /Некорректная/);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('перенос из других лаунчеров: находит папки, копирует без перезаписи', async () => {
+  const fs = await import('node:fs/promises');
+  const os = await import('node:os');
+  const { findSources, importFrom } = await import('../src/main/core/importer.js');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shizo-imp-'));
+  const put = async (p, body = 'x') => {
+    await fs.mkdir(path.dirname(path.join(root, p)), { recursive: true });
+    await fs.writeFile(path.join(root, p), body);
+  };
+  try {
+    await put('tl/.minecraft/saves/Остров/level.dat');
+    await put('tl/.minecraft/screenshots/a.png');
+    await put('tl/.minecraft/options.txt', 'fov:90');
+    await put('prism/instances/Пак/minecraft/saves/W/level.dat');
+    await put('prism/instances/Пусто/minecraft/mods/m.jar'); // без миров и скриншотов — не показываем
+    const found = await findSources([
+      { launcher: 'TLauncher', single: path.join(root, 'tl/.minecraft') },
+      { launcher: 'Prism', instances: path.join(root, 'prism/instances'), inner: ['.minecraft', 'minecraft'] },
+      { launcher: 'Нет', instances: path.join(root, 'nope'), inner: [''] },
+    ]);
+    assert.deepEqual(found.map((f) => [f.launcher, f.name, f.worlds, f.shots, f.options]), [['TLauncher', '.minecraft', 1, 1, true], ['Prism', 'Пак', 1, 0, false]]);
+    const dest = path.join(root, 'dest');
+    await put('dest/saves/Остров/level.dat', 'мой');
+    const r = await importFrom(found[0].dir, dest, { options: true });
+    assert.deepEqual(r, { worlds: 1, shots: 1, packs: 0, options: true });
+    assert.deepEqual((await fs.readdir(path.join(dest, 'saves'))).sort(), ['Остров', 'Остров (перенос)']);
+    assert.equal(await fs.readFile(path.join(dest, 'saves', 'Остров', 'level.dat'), 'utf8'), 'мой'); // свой мир не тронут
+    assert.equal((await importFrom(found[0].dir, dest)).shots, 0); // повторно скриншоты не дублируются
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('режим слабого ПК: облегчает графику, ставит недостающие моды, выключение возвращает как было', async () => {
+  const fs = await import('node:fs/promises');
+  const http = await import('node:http');
+  const os = await import('node:os');
+  const { enableLowEnd, disableLowEnd, readOptions } = await import('../src/main/core/lowend.js');
+  const { createInstance, gameDir, getInstance } = await import('../src/main/core/instances.js');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shizo-low-'));
+  const server = http.createServer((req, res) => res.end(JSON.stringify([{ id: 'P1', slug: 'sodium', title: 'Sodium' }, { id: 'P2', slug: 'lithium', title: 'Lithium' }, { id: 'P3', slug: 'modernfix', title: 'ModernFix' }])));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const inst = await createInstance(root, { name: 'T', mc: '1.21.11', loader: { type: 'fabric', version: '0.1' } });
+    const g = gameDir(root, inst.id);
+    await fs.mkdir(path.join(g, 'mods'), { recursive: true });
+    await fs.writeFile(path.join(g, 'mods', 'sodium-mine.jar'), 'x');
+    await fs.writeFile(path.join(g, 'options.txt'), 'renderDistance:16\nfov:0.5\n');
+    const install = async (id) => {
+      if (id === 'P3') throw new Error('нет версии');
+      await fs.writeFile(path.join(g, 'mods', `${id}.jar`), 'x');
+      return [`${id}.jar`];
+    };
+    const r = await enableLowEnd(root, inst.id, { install, installed: new Set(['P1']) }, `http://127.0.0.1:${server.address().port}`);
+    assert.deepEqual([r.added, r.skipped], [['P2.jar'], ['ModernFix']]); // Sodium уже стоял — не трогаем
+    const on = readOptions(await fs.readFile(path.join(g, 'options.txt'), 'utf8'));
+    assert.deepEqual([on.get('renderDistance'), on.get('fov'), on.get('graphicsMode')], ['6', '0.5', '0']);
+    await disableLowEnd(root, inst.id);
+    const off = readOptions(await fs.readFile(path.join(g, 'options.txt'), 'utf8'));
+    assert.deepEqual([off.get('renderDistance'), off.get('fov'), off.has('graphicsMode')], ['16', '0.5', false]);
+    assert.deepEqual((await fs.readdir(path.join(g, 'mods'))).sort(), ['sodium-mine.jar']); // убрали только своё
+    assert.equal((await getInstance(root, inst.id)).lowEnd, null);
+  } finally {
+    server.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('статус Discord: рукопожатие и установка активности (имитация канала Discord)', async () => {
+  const net = await import('node:net');
+  const { showPresence, frame } = await import('../src/main/core/discord.js');
+  const got = [];
+  const prefix = `\\\\?\\pipe\\shizo-test-discord-${process.pid}-`;
+  const read = (buf) => JSON.parse(buf.subarray(8, 8 + buf.readInt32LE(4)).toString());
+  const server = net.createServer((sock) => {
+    sock.on('error', () => {});
+    sock.on('data', (b) => {
+      const msg = read(b);
+      got.push([b.readInt32LE(0), msg]);
+      if (msg.client_id) sock.write(frame(1, msg.client_id === 'good' ? { evt: 'READY', data: {} } : { evt: 'ERROR', data: { message: 'Invalid Client ID' } }));
+    });
+  });
+  await new Promise((r) => server.listen(`${prefix}0`, r));
+  try {
+    assert.equal(await showPresence('', {}, { prefix }), null); // ID не задан
+    assert.equal(await showPresence('bad', {}, { prefix }), null);
+    const p = await showPresence('good', { details: 'Играет на SHIZOSTAN' }, { prefix });
+    assert.ok(p);
+    await new Promise((r) => setTimeout(r, 100));
+    const set = got.find(([op, m]) => op === 1 && m.cmd === 'SET_ACTIVITY');
+    assert.equal(set[1].args.activity.details, 'Играет на SHIZOSTAN');
+    p.stop();
+    assert.equal(await showPresence('good', {}, { prefix: `\\\\?\\pipe\\shizo-nobody-${process.pid}-`, timeout: 500 }), null); // Discord не запущен
+  } finally {
+    server.close();
+  }
+});
