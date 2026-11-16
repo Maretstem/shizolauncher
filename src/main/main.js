@@ -325,11 +325,13 @@ const handlers = {
       const info = await checkUpdate(config().updateRepo, app.getVersion());
       if (!info) throw new Error('Обновление уже не нужно');
       const file = await downloadUpdate(info, path.join(ROOT, 'updates'), { ...opts, onProgress: (p) => opts.onProgress({ ...p, label: `Обновление ${info.version}` }) });
-      // Тихая установка поверх текущей версии, затем запуск новой. Перезапуск делаем сами:
-      // флаг установщика --force-run запускает лаунчер через ярлык в «Пуске», которого в этот момент уже нет.
-      const q = (s) => `'${s.replace(/'/g, "''")}'`;
-      const script = `Start-Process -Wait -FilePath ${q(file)} -ArgumentList '/S'; Start-Process -FilePath ${q(process.execPath)}`;
-      spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-Command', script], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+      // Тихая установка поверх текущей версии, затем запуск новой. Делает это крошечный скрипт Windows Script Host:
+      // флаг установщика --force-run ищет ярлык в «Пуске», которого в этот момент нет, а отдельно запущенный
+      // PowerShell без консоли молча завершается. wscript — оконная программа, ей консоль не нужна.
+      const helper = path.join(path.dirname(file), 'finish-update.js');
+      const js = `var sh = new ActiveXObject('WScript.Shell');\nsh.Run(${JSON.stringify(`"${file}" /S`)}, 0, true);\nsh.Run(${JSON.stringify(`"${process.execPath}"`)}, 1, false);\n`;
+      await fs.writeFile(helper, '\ufeff' + js, 'utf16le'); // UTF-16 с BOM: путь может быть на русском
+      spawn('wscript.exe', ['//B', '//Nologo', helper], { detached: true, stdio: 'ignore', windowsHide: true }).on('error', () => {}).unref();
       setTimeout(() => app.quit(), 500);
     });
   },
