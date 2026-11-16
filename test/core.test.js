@@ -27,11 +27,20 @@ test('maven-пути', () => {
 });
 
 test('Microsoft: понятные ошибки вместо кодов AADSTS', async () => {
-  const { msError, msDeviceCode } = await import('../src/main/core/auth.js');
+  const { msError, msAuthRequest, msRedirectCode, MS_REDIRECT } = await import('../src/main/core/auth.js');
+  const { createHash } = await import('node:crypto');
   assert.match(msError({ body: { error_description: 'AADSTS7000218: The request body must contain client_assertion. Trace ID: x' } }).message, /Allow public client flows/);
   assert.match(msError({ body: { error_description: 'AADSTS700038: 123 is not a valid application identifier.' } }).message, /Application \(client\) ID/);
   assert.equal(msError({ body: { error_description: 'Something else. Trace ID: 1' } }).message, 'Microsoft: Something else.');
-  await assert.rejects(msDeviceCode(''), /ещё не подключён/);
+  assert.throws(() => msAuthRequest(''), /ещё не подключён/);
+  const req = msAuthRequest('my-client');
+  const q = new URL(req.url).searchParams;
+  assert.deepEqual([q.get('client_id'), q.get('redirect_uri'), q.get('code_challenge_method'), q.get('state')], ['my-client', MS_REDIRECT, 'S256', req.state]);
+  assert.equal(q.get('code_challenge'), createHash('sha256').update(req.verifier).digest('base64url'));
+  assert.equal(msRedirectCode('https://login.live.com/ppsecure/post.srf', req.state), null); // вход ещё идёт
+  assert.equal(msRedirectCode(`${MS_REDIRECT}?code=abc&state=${req.state}`, req.state), 'abc');
+  assert.throws(() => msRedirectCode(`${MS_REDIRECT}?code=abc&state=чужой`, req.state), /не прошёл проверку/);
+  assert.throws(() => msRedirectCode(`${MS_REDIRECT}?error=access_denied`, req.state), /Отменено/);
 });
 
 test('оффлайн-аккаунт: UUID как у ванильного сервера', () => {
@@ -423,5 +432,38 @@ test('свой сервер авторизации (authlib-injector): поис�
     assert.deepEqual(await freshAccount(acc).then((a) => [a.accessToken, a.name]), ['tok2', 'Hero2']); // истекла — продлена
   } finally {
     server.close();
+  }
+});
+
+test('сборка: выключенный мод остаётся выключенным, убранный удаляется даже выключенным', async () => {
+  const fs = await import('node:fs/promises');
+  const http = await import('node:http');
+  const os = await import('node:os');
+  const { createHash } = await import('node:crypto');
+  const { syncPack, PACK_ID } = await import('../src/main/core/pack.js');
+  const { gameDir } = await import('../src/main/core/instances.js');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shizo-off-'));
+  const served = {};
+  const file = (p, body) => ((served[`/files/${p}`] = body), { path: p, sha1: createHash('sha1').update(body).digest('hex'), size: body.length });
+  const publish = (version, files) => (served['/pack.json'] = JSON.stringify({ version, minecraft: '1.21.11', files }));
+  const server = http.createServer((req, res) => (served[req.url] != null ? res.end(served[req.url]) : res.writeHead(404).end()));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}/pack.json`;
+  const mods = path.join(gameDir(root, PACK_ID), 'mods');
+  const list = async () => (await fs.readdir(mods)).sort();
+  try {
+    publish('1', [file('mods/keep.jar', 'K1'), file('mods/shader.jar', 'S1'), file('mods/gone.jar', 'G1'), file('mods/dup.jar', 'D1')]);
+    await syncPack(root, url);
+    await fs.rename(path.join(mods, 'shader.jar'), path.join(mods, 'shader.jar.disabled')); // игрок выключил
+    await fs.rename(path.join(mods, 'gone.jar'), path.join(mods, 'gone.jar.disabled'));
+    await fs.copyFile(path.join(mods, 'dup.jar'), path.join(mods, 'dup.jar.disabled')); // след старого бага: обе копии
+
+    publish('2', [file('mods/keep.jar', 'K1'), file('mods/shader.jar', 'S2'), file('mods/dup.jar', 'D1')]); // shader обновился, gone убран
+    await syncPack(root, url);
+    assert.deepEqual(await list(), ['dup.jar', 'keep.jar', 'shader.jar.disabled']);
+    assert.equal(await fs.readFile(path.join(mods, 'shader.jar.disabled'), 'utf8'), 'S2'); // обновлён, но выключен
+  } finally {
+    server.close();
+    await fs.rm(root, { recursive: true, force: true });
   }
 });

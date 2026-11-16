@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { cleanCache, diagnose, recommendFlags, recommendMemory } from './core/care.js';
-import { authAgent, customLogin, elyLogin, freshAccount, msDeviceCode, msPoll, offlineAccount } from './core/auth.js';
+import { authAgent, customLogin, elyLogin, freshAccount, msAuthRequest, msFinishLogin, msRedirectCode, offlineAccount } from './core/auth.js';
 import * as instances from './core/instances.js';
 import { ensureLoader, install, launch, loaderVersions, versionList } from './core/minecraft.js';
 import * as modrinth from './core/modrinth.js';
@@ -106,12 +106,39 @@ const handlers = {
   addEly: async (login, password, totp) => addAccount(await elyLogin(login, password, totp)),
   addCustom: async (server, login, password) => addAccount(await customLogin(server, login, password)),
   msLogin: () =>
-    job('ms', async ({ signal }) => {
-      const clientId = config().azureClientId;
-      const device = await msDeviceCode(clientId);
-      send('ms-code', { code: device.user_code, url: device.verification_uri });
-      return addAccount(await msPoll(clientId, device, signal));
-    }),
+    job('ms', ({ signal }) =>
+      new Promise((resolve, reject) => {
+        const clientId = config().azureClientId;
+        const req = msAuthRequest(clientId);
+        // Отдельная сессия в памяти: после входа в лаунчере не остаётся куки Microsoft
+        const popup = new BrowserWindow({ parent: win, modal: true, width: 520, height: 720, title: 'Вход через Microsoft', autoHideMenuBar: true, backgroundColor: '#ffffff', webPreferences: { partition: `ms-login-${Date.now()}`, sandbox: true } });
+        let done = false;
+        const finish = (fn) => {
+          if (done) return;
+          done = true;
+          if (!popup.isDestroyed()) popup.close();
+          fn();
+        };
+        const watch = (e, url) => {
+          let code;
+          try {
+            code = msRedirectCode(url, req.state);
+          } catch (err) {
+            e.preventDefault();
+            return finish(() => reject(err));
+          }
+          if (!code) return;
+          e.preventDefault();
+          finish(() => msFinishLogin(clientId, code, req.verifier).then(addAccount).then(resolve, reject));
+        };
+        popup.webContents.on('will-redirect', watch);
+        popup.webContents.on('will-navigate', watch);
+        popup.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+        popup.on('closed', () => finish(() => reject(new Error('Отменено'))));
+        signal.addEventListener('abort', () => finish(() => reject(new Error('Отменено'))));
+        popup.loadURL(req.url).catch(() => {}); // ошибки загрузки страницы видны в самом окне
+      }),
+    ),
   async removeAccount(id) {
     accounts = accounts.filter((a) => a.id !== id);
     await saveAccounts();
@@ -298,8 +325,11 @@ const handlers = {
       const info = await checkUpdate(config().updateRepo, app.getVersion());
       if (!info) throw new Error('Обновление уже не нужно');
       const file = await downloadUpdate(info, path.join(ROOT, 'updates'), { ...opts, onProgress: (p) => opts.onProgress({ ...p, label: `Обновление ${info.version}` }) });
-      // Тихая установка поверх текущей версии и перезапуск лаунчера
-      spawn(file, ['/S', '--force-run'], { detached: true, stdio: 'ignore' }).unref();
+      // Тихая установка поверх текущей версии, затем запуск новой. Перезапуск делаем сами:
+      // флаг установщика --force-run запускает лаунчер через ярлык в «Пуске», которого в этот момент уже нет.
+      const q = (s) => `'${s.replace(/'/g, "''")}'`;
+      const script = `Start-Process -Wait -FilePath ${q(file)} -ArgumentList '/S'; Start-Process -FilePath ${q(process.execPath)}`;
+      spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-Command', script], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
       setTimeout(() => app.quit(), 500);
     });
   },

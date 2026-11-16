@@ -1,5 +1,5 @@
 // Аккаунты: оффлайн, Ely.by (Yggdrasil + authlib-injector), Microsoft (device code flow).
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { downloadAll, fetchJson, postJson, rawFetch } from './net.js';
 
@@ -135,33 +135,41 @@ export function msError(e) {
   return new Error(code ? AAD[code] : `Microsoft: ${text.split(' Trace ID')[0]}`);
 }
 
-export async function msDeviceCode(clientId) {
+// Вход в окне Microsoft: обычная страница входа, после неё Microsoft перенаправляет на REDIRECT с одноразовым кодом.
+// PKCE (verifier/challenge) и state защищают код от перехвата и подмены.
+export const MS_REDIRECT = 'https://login.microsoftonline.com/common/oauth2/nativeclient';
+
+export function msAuthRequest(clientId) {
   if (!clientId) throw Object.assign(new Error('Вход через Microsoft ещё не подключён в этом лаунчере. Пока войди через Ely.by или офлайн.'), { code: 'NO_CLIENT_ID' });
-  return form(`${MS}/devicecode`, { client_id: clientId, scope: 'XboxLive.signin offline_access' }).catch((e) => {
-    throw msError(e);
+  const verifier = randomBytes(32).toString('base64url');
+  const state = randomBytes(16).toString('hex');
+  const params = new URLSearchParams({
+    client_id: clientId,
+    response_type: 'code',
+    redirect_uri: MS_REDIRECT,
+    scope: 'XboxLive.signin offline_access',
+    code_challenge: createHash('sha256').update(verifier).digest('base64url'),
+    code_challenge_method: 'S256',
+    state,
+    prompt: 'select_account',
   });
+  return { url: `${MS}/authorize?${params}`, verifier, state };
 }
 
-export async function msPoll(clientId, device, signal) {
-  const deadline = Date.now() + device.expires_in * 1000;
-  let wait = (device.interval ?? 5) * 1000;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, wait));
-    if (signal?.aborted) throw new Error('Отменено');
-    try {
-      const token = await form(`${MS}/token`, {
-        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-        client_id: clientId,
-        device_code: device.device_code,
-      });
-      return msToMinecraft(token);
-    } catch (e) {
-      if (e.body?.error === 'authorization_pending') continue;
-      if (e.body?.error === 'slow_down') wait += 5000;
-      else throw msError(e);
-    }
-  }
-  throw new Error('Время на вход истекло, попробуй ещё раз');
+// Адрес, куда ушло окно входа -> код (вход завершён), null (ещё идёт) или ошибка
+export function msRedirectCode(url, state) {
+  if (!url.startsWith(MS_REDIRECT)) return null;
+  const q = new URL(url).searchParams;
+  if (q.get('error')) throw q.get('error') === 'access_denied' ? new Error('Отменено') : msError({ body: { error_description: q.get('error_description') ?? q.get('error') } });
+  if (q.get('state') !== state) throw new Error('Ответ Microsoft не прошёл проверку — попробуй войти ещё раз');
+  return q.get('code');
+}
+
+export async function msFinishLogin(clientId, code, verifier) {
+  const token = await form(`${MS}/token`, { client_id: clientId, grant_type: 'authorization_code', code, redirect_uri: MS_REDIRECT, code_verifier: verifier }).catch((e) => {
+    throw msError(e);
+  });
+  return msToMinecraft(token);
 }
 
 const XERR = {

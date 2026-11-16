@@ -49,7 +49,21 @@ export async function syncPack(root, url, { signal, onProgress } = {}) {
   const meta = { name: m.name ?? 'SHIZOSTAN', mc: m.minecraft, loader: m.loader ?? null };
   const inst = (await getInstance(root, PACK_ID)) ?? (await createInstance(root, { id: PACK_ID, ...meta }));
   const dir = gameDir(root, PACK_ID);
-  const restored = await downloadAll(packTasks(m, url, dir), { signal, onProgress: (p) => onProgress?.({ ...p, label: `Сборка ${m.version}` }) });
-  for (const old of staleFiles(inst.pack?.files, m)) await fs.rm(safeJoin(dir, old), { force: true });
+  const exists = (f) => fs.access(f).then(() => true, () => false);
+  const tasks = [];
+  for (const t of packTasks(m, url, dir)) {
+    const off = `${t.dest}.disabled`;
+    if (!(await exists(off))) tasks.push(t);
+    else if (await exists(t.dest)) {
+      // Старые версии лаунчера докачивали выключенный мод заново — остались обе копии. Работает включённая, лишнюю убираем.
+      await fs.rm(off, { force: true });
+      tasks.push(t);
+    } else tasks.push({ ...t, dest: off }); // игрок выключил мод — обновляем, но оставляем выключенным
+  }
+  const restored = await downloadAll(tasks, { signal, onProgress: (p) => onProgress?.({ ...p, label: `Сборка ${m.version}` }) });
+  for (const old of staleFiles(inst.pack?.files, m)) {
+    await fs.rm(safeJoin(dir, old), { force: true });
+    await fs.rm(safeJoin(dir, `${old}.disabled`), { force: true }); // убран из сборки — удаляем, даже если был выключен
+  }
   return { ...(await updateInstance(root, PACK_ID, { ...meta, pack: { version: m.version, files: m.files.map((f) => f.path) } })), restored };
 }

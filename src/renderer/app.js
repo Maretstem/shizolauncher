@@ -479,7 +479,7 @@ async function panelContent(i, kind) {
   }).then(again);
   const stale = files.filter((f) => f.update);
   if (stale.length) section.querySelector('.panel-head').append(h('button.btn.primary', { onclick: (e) => upgrade(null, e.currentTarget) }, icon('refresh', 16), `Обновить все (${stale.length})`));
-  if (i.isPack && kind === 'mods') section.append(h('p.muted', {}, 'Моды сборки обновляются вместе со сборкой — отдельно их обновлять нельзя, иначе сервер не пустит.'));
+  if (i.isPack && kind === 'mods') section.append(h('p.muted', {}, 'Ненужный мод можно выключить переключателем — при обновлениях сборки он останется выключенным. Не выключай моды, без которых сервер не пустит: обычно это библиотеки и моды с новыми блоками и предметами.'))
   section.append(
     files.length
       ? h('div.rows', {}, files.map((f, n) =>
@@ -759,21 +759,11 @@ function loginEly(needTotp) {
 }
 
 async function loginMicrosoft() {
-  dialog('Вход через Microsoft', h('p.muted', {}, 'Получаю код для входа…'), [h('button.btn', { onclick: () => (call('cancel', 'ms'), dlg.close()) }, 'Отмена')]);
+  dialog('Вход через Microsoft', h('p.muted', {}, 'Войди в открывшемся окне Microsoft. Пароль вводится на сайте Microsoft — лаунчер его не видит.'), [h('button.btn', { onclick: () => (call('cancel', 'ms'), dlg.close()) }, 'Отмена')]);
   const acc = await act(() => call('msLogin'));
   dlg.close();
   if (acc) (toast(`Привет, ${acc.name}!`), refresh());
 }
-
-api.on('ms-code', ({ code, url }) => {
-  dialog('Вход через Microsoft',
-    h('div.stack', {}, h('p.muted', {}, 'Открой страницу входа Microsoft и введи этот код. Окно закроется само, когда вход завершится.'), h('div.code', {}, code)),
-    [
-      h('button.btn', { onclick: () => (call('cancel', 'ms'), dlg.close()) }, 'Отмена'),
-      h('button.btn', { onclick: () => (navigator.clipboard.writeText(code), toast('Код скопирован')) }, 'Скопировать код'),
-      h('button.btn.primary', { onclick: () => act(() => call('openExternal', url)) }, 'Открыть страницу входа'),
-    ]);
-});
 
 // ---------- настройки ----------
 function viewSettings() {
