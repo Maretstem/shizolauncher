@@ -15,6 +15,7 @@ import { readJson, useFetch, writeJson } from './core/net.js';
 import { fetchPack, PACK_ID, packStatus, syncPack } from './core/pack.js';
 import { diffNews, fetchDevlog, wanted } from './core/devlog.js';
 import { loadSkin } from './core/skin.js';
+import { exportMrpack, exportPrism, findInstances, importArchive, importInstance } from './core/transfer.js';
 import { checkUpdate, downloadUpdate } from './core/update.js';
 import { listBackups, makeBackup, restoreBackup } from './core/backup.js';
 import { showPresence } from './core/discord.js';
@@ -45,6 +46,7 @@ const hiddenStart = process.argv.includes('--hidden');
 
 let win;
 let importList = []; // найденные папки других лаунчеров: окну отдаём номер, а не путь
+let instanceList = []; // найденные сборки других лаунчеров — тоже по номеру
 let tray = null;
 let quitting = false;
 const skins = new Map(); // id аккаунта -> { at, skin }
@@ -393,8 +395,12 @@ const handlers = {
       });
       games.set(id, child);
       let presence = null;
+      const started = Date.now();
       const ended = (code) => {
         presence?.stop();
+        // Время в игре для «Обзора»: сессии короче минуты (вылет на загрузке) не считаем
+        const played = Date.now() - started;
+        if (played > 60_000) instances.getInstance(ROOT, id).then((x) => x && instances.updateInstance(ROOT, id, { playTime: (x.playTime ?? 0) + played })).catch(() => {});
         if (games.delete(id)) send('game', { id, running: false, code, problems: code ? diagnose(tail.join('')) : [] });
       };
       child.on('error', (e) => {
@@ -481,6 +487,79 @@ const handlers = {
     );
   },
 
+  // --- сборки целиком: импорт из других лаунчеров и архивов, экспорт, иконки ---
+  async instanceSources() {
+    instanceList = await findInstances();
+    return instanceList.map(({ game, ...s }, index) => ({ ...s, index }));
+  },
+  importInstance(index) {
+    const src = instanceList[index];
+    if (!src) throw new Error('Сборка не найдена — обнови список');
+    return job('import-instance', (opts) => importInstance(ROOT, src, opts));
+  },
+  async importArchive() {
+    const r = await dialog.showOpenDialog(win, { title: 'Архив сборки', filters: [{ name: 'Сборки (.mrpack, .zip)', extensions: ['mrpack', 'zip'] }], properties: ['openFile'] });
+    if (r.canceled) return null;
+    const file = r.filePaths[0];
+    return job('import-instance', async (opts) => (/\.mrpack$/i.test(file) ? { inst: await modrinth.installMrpack(ROOT, file, opts), failed: [] } : importArchive(ROOT, file, opts)));
+  },
+  async exportInstance(id, format, withWorlds) {
+    const inst = await instances.getInstance(ROOT, id);
+    if (!inst) throw new Error('Экземпляр не найден');
+    const ext = format === 'prism' ? 'zip' : 'mrpack';
+    const r = await dialog.showSaveDialog(win, {
+      title: format === 'prism' ? 'Экспорт для Prism / MultiMC' : 'Экспорт в Modrinth (.mrpack)',
+      defaultPath: path.join(app.getPath('downloads'), `${inst.name.replace(/[\\/:*?"<>|]/g, '_')}.${ext}`),
+      filters: [{ name: format === 'prism' ? 'Архив Prism' : 'Модпак Modrinth', extensions: [ext] }],
+    });
+    if (r.canceled) return null;
+    const out = await job(`export:${id}`, () => (format === 'prism' ? exportPrism : exportMrpack)(ROOT, id, r.filePath, { withWorlds: !!withWorlds }));
+    shell.showItemInFolder(out.file);
+    return out;
+  },
+  async pickIcon(id) {
+    const r = await dialog.showOpenDialog(win, { title: 'Иконка сборки', filters: [{ name: 'Картинки', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }], properties: ['openFile'] });
+    return r.canceled ? null : instances.setIcon(ROOT, id, r.filePaths[0]);
+  },
+  resetIcon: (id) => instances.setIcon(ROOT, id, null),
+  instanceStats: (id) => instances.instanceStats(ROOT, id),
+
+  // --- очередь модов и починка по кнопке из проверки модов ---
+  installMany(id, items) {
+    if (!Array.isArray(items) || !items.length) throw new Error('Очередь пуста');
+    if (games.has(id)) throw new Error('Сначала закрой игру');
+    return job(`queue:${id}`, (opts) => modrinth.installMany(ROOT, id, items.slice(0, 50).map((x) => ({ projectId: String(x.projectId), type: x.type, title: String(x.title ?? '') })), opts));
+  },
+  // actions — из проверки модов: { type: 'remove', files } или { type: 'deps', ids }
+  fixMods(id, actions) {
+    if (games.has(id)) throw new Error('Сначала закрой игру');
+    return job(`fix:${id}`, async (opts) => {
+      const inst = await instances.getInstance(ROOT, id);
+      const dir = path.join(instances.gameDir(ROOT, id), 'mods');
+      const out = { removed: 0, installed: [], notFound: [] };
+      for (const a of actions ?? []) {
+        if (a.type === 'remove') {
+          for (const f of a.files ?? []) {
+            if (path.basename(f) !== f) continue;
+            await shell.trashItem(path.join(dir, f)).catch(() => fs.rm(path.join(dir, f), { force: true }));
+            out.removed++;
+          }
+        } else if (a.type === 'deps') {
+          for (const modId of a.ids ?? []) {
+            opts.onProgress({ label: `Ищу ${modId}`, files: 0, totalFiles: 1, bytes: 0, totalBytes: 0 });
+            const project = await modrinth.findProjectByModId(modId, inst?.mc, inst?.loader?.type);
+            if (!project) {
+              out.notFound.push(modId);
+              continue;
+            }
+            await modrinth.installProject(ROOT, id, project, 'mod', opts).then((files) => out.installed.push(...files), () => out.notFound.push(modId));
+          }
+        }
+      }
+      return out;
+    });
+  },
+
   // --- Modrinth ---
   search: (params) => modrinth.search(params),
   contentInfo: (id) => modrinth.contentInfo(ROOT, id),
@@ -508,7 +587,12 @@ const handlers = {
       setTimeout(() => app.quit(), 500);
     });
   },
-  installProject: (id, projectId, type) => job(`mod:${projectId}`, (opts) => modrinth.installProject(ROOT, id, projectId, type, opts)),
+  // Шейдер ставится вместе с Iris/Oculus, если его ещё нет. -> { files, extra }
+  installProject: (id, projectId, type) =>
+    job(`mod:${projectId}`, async (opts) => {
+      const extra = type === 'shader' ? await modrinth.ensureShaderLoader(ROOT, id, opts) : null;
+      return { files: await modrinth.installProject(ROOT, id, projectId, type, opts), extra };
+    }),
   installModpack: (projectId) => job('modpack', (opts) => modrinth.installModpackProject(ROOT, projectId, opts)),
   async importMrpack() {
     const r = await dialog.showOpenDialog(win, { filters: [{ name: 'Модпак Modrinth', extensions: ['mrpack'] }], properties: ['openFile'] });
@@ -556,7 +640,11 @@ app.whenReady().then(async () => {
     try {
       const url = new URL(req.url);
       const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
-      const file = url.hostname === 'shot' ? instances.screenshotFile(ROOT, parts[0], parts[1]) : url.hostname === 'bg' && /^background\.(png|jpe?g|webp)$/.test(parts[0]) ? path.join(ROOT, parts[0]) : null;
+      const file =
+        url.hostname === 'shot' ? instances.screenshotFile(ROOT, parts[0], parts[1])
+        : url.hostname === 'icon' ? instances.iconFile(ROOT, parts[0], parts[1])
+        : url.hostname === 'bg' && /^background\.(png|jpe?g|webp)$/.test(parts[0]) ? path.join(ROOT, parts[0])
+        : null;
       if (!file) throw new Error('нет такого ресурса');
       return await net.fetch(pathToFileURL(file).href);
     } catch {

@@ -14,6 +14,7 @@ const logs = {}; // id экземпляра -> строки
 const stopping = new Set(); // игры, которые остановил сам игрок
 const browse = { type: 'mod', query: '', sort: 'relevance', category: '' };
 const consoleView = { filter: '', level: 'all', follow: true };
+const queue = { instance: null, items: new Map() }; // очередь установки: projectId -> { projectId, type, title }
 let menuOpen = false; // выпадающее меню аккаунтов
 let update = null; // доступное обновление лаунчера
 let devlog = null; // посты вкладки «Разработка»
@@ -35,7 +36,12 @@ const store = {
     }
   },
 };
-const unreadDev = () => !!devlog?.posts?.length && store.get('devlog-read') !== devlog.posts[0].id;
+// Сколько постов вышло с тех пор, как игрок последний раз открывал «Разработку»
+const unreadDev = () => {
+  const posts = devlog?.posts ?? [];
+  const at = posts.findIndex((p) => p.id === store.get('devlog-read'));
+  return at === -1 ? posts.length : at;
+};
 
 const THEMES = { sunset: 'Закат', night: 'Ночь', forest: 'Лес', ember: 'Огонь', mono: 'Графит' };
 const SORTS = { relevance: 'По релевантности', downloads: 'По загрузкам', follows: 'По подписчикам', newest: 'Сначала новые', updated: 'Недавно обновлённые' };
@@ -186,6 +192,7 @@ function avatar(acc) {
 }
 
 function tile(i) {
+  if (i.icon) return h('div.tile', {}, h('img.own', { src: `shizo://icon/${i.id}/${i.icon}`, alt: '' }));
   return h('div.tile', {}, i.isPack ? h('img', { src: 'assets/sz.webp', alt: '' }) : i.name[0].toUpperCase());
 }
 
@@ -277,7 +284,7 @@ async function updatePackNow() {
 
 function renderTop() {
   const tabs = [['home', 'Главная'], ['mods', 'Моды'], ['packs', 'Модпаки'], ['dev', 'Разработка']];
-  $('#tabs').replaceChildren(...tabs.map(([id, label]) => h(`button.pill${tab === id ? '.on' : ''}`, { onclick: () => go(id) }, label, id === 'dev' && unreadDev() && h('span.new-dot', { title: 'Есть новые посты' }))));
+  $('#tabs').replaceChildren(...tabs.map(([id, label]) => h(`button.pill${tab === id ? '.on' : ''}`, { onclick: () => go(id) }, label, id === 'dev' && unreadDev() > 0 && h('span.badge', { title: `Новых постов: ${unreadDev()}` }, unreadDev() > 9 ? '9+' : String(unreadDev())))));
   const acc = account();
   const pick = (id) => act(async () => (await call('setSettings', { selected: id }), (menuOpen = false), await refresh()));
   const item = (attrs, ...kids) => h('button.menu-item', { role: 'menuitem', ...attrs }, kids);
@@ -332,6 +339,32 @@ function skinCard(acc) {
   );
 }
 
+// Справка о входе через Microsoft: что работает сейчас и что будет после одобрения лаунчера
+function msHelp() {
+  const step = (n, title, text) => h('div.row', {}, h('span.n', {}, String(n).padStart(2, '0')), h('div.body', {}, h('b', {}, title), h('span.wrap', {}, text)));
+  dlg.classList.add('wide');
+  dialog('Вход через аккаунт Microsoft',
+    h('div.stack', {},
+      h('p.muted', {}, 'Microsoft пускает в Minecraft только лаунчеры, которые одобрила Mojang. Как только ShizoLauncher получит одобрение, кнопка «Microsoft» заработает после обычного обновления лаунчера — ничего переустанавливать не придётся.'),
+      h('h3', {}, 'Когда вход заработает'),
+      h('div.rows', {},
+        step(1, 'Нажми «Добавить аккаунт» → «Microsoft»', 'Откроется окно с официальной страницей входа Microsoft (login.live.com).'),
+        step(2, 'Введи почту и пароль от аккаунта Microsoft', 'Тот, на который куплен Minecraft. Пароль вводится на сайте Microsoft — лаунчер его не видит и не хранит.'),
+        step(3, 'Подтверди вход', 'Если включена двухфакторная защита — введи код из приложения или письма.'),
+        step(4, 'Готово', 'Окно закроется само, аккаунт появится в списке. Ник и скин — как в лицензии.'),
+      ),
+      h('h3', {}, 'Если что-то пошло не так'),
+      h('div.rows', {},
+        step(1, '«У аккаунта нет Minecraft»', 'Проверь, что входишь тем же аккаунтом, на котором куплена игра (minecraft.net → Профиль).'),
+        step(2, '«Аккаунт Xbox не создан»', 'Зайди один раз на xbox.com этим аккаунтом и создай профиль — это бесплатно.'),
+        step(3, 'Аккаунт ребёнка', 'Взрослый в семейной группе Microsoft должен разрешить вход в сторонние приложения.'),
+      ),
+      h('h3', {}, 'А пока'),
+      h('p.muted', {}, 'Играй через Ely.by — это бесплатно, со скином, и на наш сервер пускает. Лицензионный ник можно занять и там.'),
+    ),
+    [closeBtn('Понятно'), h('button.btn.primary', { onclick: () => (dlg.close(), loginEly()) }, 'Войти через Ely.by')]);
+}
+
 // Один диалог на все способы входа
 function addAccount() {
   const way = (title, text, fn) => h('button.way.glass', { onclick: fn }, h('b', {}, title), h('span', {}, text));
@@ -339,7 +372,7 @@ function addAccount() {
     h('div.stack', {},
       S.config.azureClientId
         ? way('Microsoft', 'Лицензионный аккаунт Minecraft', loginMicrosoft)
-        : h('div.way.glass.off', { 'aria-disabled': 'true' }, h('b', {}, 'Microsoft'), h('span', {}, 'Скоро: ждём, пока Microsoft одобрит лаунчер. Пока используй Ely.by или офлайн.')),
+        : h('button.way.glass.off', { onclick: msHelp }, h('b', {}, 'Microsoft — как войти с лицензией?'), h('span', {}, 'Вход через Microsoft ещё не включён. Нажми — расскажу, как играть с лицензией уже сейчас.')),
       way('Ely.by', 'Бесплатный аккаунт со скинами', () => loginEly()),
       way('Свой сервер', 'Сервер авторизации со скинами: LittleSkin, Blessing Skin и другие', loginCustom),
       way('Офлайн', 'Только ник, без пароля', loginOffline),
@@ -406,14 +439,35 @@ async function play(id, force) {
 // Что нашла проверка модов. canPlay — показать кнопку «Всё равно играть».
 function modProblems(id, problems, canPlay) {
   dlg.classList.add('wide');
+  const fixable = problems.filter((p) => p.action);
+  // Исправляет выбранные проблемы и сразу проверяет моды заново
+  const fix = (list, btn) => act(async () => {
+    btn.disabled = true;
+    btn.textContent = 'Исправляю…';
+    const r = await call('fixMods', id, list.map((p) => p.action));
+    const parts = [r.removed && `убрано в корзину: ${r.removed}`, r.installed.length && `докачано: ${r.installed.length}`, r.notFound.length && `не нашлось на Modrinth: ${r.notFound.join(', ')}`].filter(Boolean);
+    toast(parts.length ? `Готово — ${parts.join(', ')}` : 'Готово', !!r.notFound.length);
+    const again = await call('checkMods', id);
+    if (again.problems.length) modProblems(id, again.problems, canPlay);
+    else {
+      dlg.close();
+      toast(`Проверено модов: ${again.checked} — проблем больше нет`);
+      if (canPlay) play(id);
+    }
+  }).finally(() => btn.isConnected && (btn.disabled = false));
   dialog(problems.length ? `Проверка модов: найдено проблем — ${problems.length}` : 'Проверка модов: всё в порядке',
     h('div.stack', {},
-      h('p.muted', {}, 'Это то, из-за чего игра обычно вылетает при запуске. Лучше исправить сейчас, чем ждать вылета.'),
-      h('div.rows.scroll', {}, problems.map((p, n) => h('div.row', {}, h('span.n', {}, String(n + 1).padStart(2, '0')), h('div.body', {}, h('b.wrap', {}, p.text), h('span.wrap', {}, p.fix))))),
+      h('p.muted', {}, 'Это то, из-за чего игра обычно вылетает при запуске. Большинство проблем лаунчер исправит сам — кнопкой «Исправить».'),
+      h('div.rows.scroll', {}, problems.map((p, n) => h('div.row', {},
+        h('span.n', {}, String(n + 1).padStart(2, '0')),
+        h('div.body', {}, h('b.wrap', {}, p.text), h('span.wrap', {}, p.fix)),
+        p.action && h('button.btn', { onclick: (e) => fix([p], e.currentTarget) }, p.action.type === 'deps' ? 'Докачать' : 'Убрать'),
+      ))),
     ),
     [
       canPlay && h('button.btn', { onclick: () => (dlg.close(), play(id, true)) }, 'Всё равно играть'),
-      h('button.btn.primary', { onclick: () => (dlg.close(), select(id).then(() => ((sub = 'mods'), render()))) }, 'Открыть моды'),
+      h('button.btn', { onclick: () => (dlg.close(), select(id).then(() => ((sub = 'mods'), render()))) }, 'Открыть моды'),
+      fixable.length > 0 && h('button.btn.primary', { onclick: (e) => fix(fixable, e.currentTarget) }, icon('wand', 16), `Исправить всё (${fixable.length})`),
     ]);
 }
 
@@ -546,34 +600,55 @@ function row(n, title, text, button) {
 }
 const linkBtn = (label, fn) => h('button.link', { onclick: fn }, label);
 
+const hours = (ms) => {
+  const m = Math.round((ms ?? 0) / 60000);
+  return m < 60 ? `${m} мин` : `${Math.floor(m / 60)} ч ${m % 60} мин`;
+};
+
+// «Обзор»: цифры по сборке сверху, ниже — что в порядке (зелёный), что требует внимания (жёлтый, красный) и что нажать
 function panelOverview(i) {
   const cfg = S.config;
   const acc = account();
-  const rows = [];
+  const rows = []; // [уровень ok|warn|bad, заголовок, текст, кнопка]
   if (i.isPack) {
-    let text = `Версия ${i.pack?.version} — актуальная`;
-    let button = linkBtn('Проверить файлы', () => repair(i.id));
-    if (!cfg.packUrl) [text, button] = ['Адрес сборки не задан: укажи ссылку на pack.json в настройках', linkBtn('Настройки', () => go('settings'))];
-    else if (!pack) [text, button] = ['Проверяю версию…', null];
-    else if (pack.error) [text, button] = [`Не удалось проверить: ${pack.error}`, linkBtn('Повторить', loadRemote)];
-    else if (i.virtual) [text, button] = [`Доступна версия ${pack.latest} — нажми «Установить»`, null];
-    else if (pack.updateAvailable) [text, button] = [`Установлена ${i.pack?.version}, доступна ${pack.latest}`, linkBtn('Обновить', () => play(i.id))];
-    rows.push(['Сборка', text, button]);
+    let row = ['ok', 'Сборка', `Версия ${i.pack?.version} — актуальная, обновится сама перед игрой`, linkBtn('Проверить файлы', () => repair(i.id))];
+    if (!cfg.packUrl) row = ['bad', 'Сборка', 'Адрес сборки не задан: укажи ссылку на pack.json в настройках', linkBtn('Настройки', () => go('settings'))];
+    else if (!pack) row = ['warn', 'Сборка', 'Проверяю версию…', null];
+    else if (pack.error) row = ['bad', 'Сборка', `Не удалось проверить: ${pack.error}. Проверь интернет или VPN.`, linkBtn('Повторить', loadRemote)];
+    else if (i.virtual) row = ['warn', 'Сборка', `Ещё не установлена. Нажми «Установить» — скачается версия ${pack.latest} со всеми модами.`, null];
+    else if (pack.updateAvailable) row = ['warn', 'Сборка', `Стоит ${i.pack?.version}, вышла ${pack.latest}. Обновится при нажатии «Играть».`, linkBtn('Обновить сейчас', updatePackNow)];
+    rows.push(row);
   } else {
-    rows.push(['Версия', `Minecraft ${i.mc} · ${loaderLabel(i)}`, linkBtn('Проверить файлы', () => repair(i.id))]);
+    rows.push(['ok', 'Версия', `Minecraft ${i.mc} · ${loaderLabel(i)}${i.importedFrom ? ` · перенесено из ${i.importedFrom}` : ''}`, linkBtn('Проверить файлы', () => repair(i.id))]);
   }
-  rows.push(['Аккаунт', acc ? `${acc.name} · ${accountLabel(acc)}` : 'Не выбран — без аккаунта игра не запустится', linkBtn('Аккаунты', () => go('accounts'))]);
+  rows.push(acc ? ['ok', 'Аккаунт', `${acc.name} · ${accountLabel(acc)}`, linkBtn('Сменить', () => go('accounts'))] : ['bad', 'Аккаунт', 'Не выбран — без аккаунта игра не запустится', linkBtn('Добавить', addAccount)]);
   if (i.isPack && cfg.serverAddress) {
-    rows.push(['Сервер', srv ? `${cfg.serverAddress} · ${srv.motd || srv.version}` : `${cfg.serverAddress} · не отвечает`, linkBtn('Скопировать IP', () => (navigator.clipboard.writeText(cfg.serverAddress), toast('IP скопирован')))]);
+    rows.push(srv ? ['ok', 'Сервер', `${cfg.serverAddress} · онлайн ${srv.online} из ${srv.max} · пинг ${srv.latency} мс`, linkBtn('Скопировать IP', () => (navigator.clipboard.writeText(cfg.serverAddress), toast('IP скопирован')))] : ['bad', 'Сервер', `${cfg.serverAddress} не отвечает — возможно, перезапуск или техработы`, linkBtn('Повторить', loadRemote)]);
   }
-  rows.push(['Запуск', `${i.memory || cfg.memory} МБ памяти · Java ${i.javaPath || cfg.javaPath ? 'своя' : 'подбирается автоматически'}`, i.virtual ? linkBtn('Настройки', () => go('settings')) : linkBtn('Параметры', () => ((sub = 'options'), render()))]);
+  rows.push(['ok', 'Запуск', `${i.memory || cfg.memory} МБ памяти · Java ${i.javaPath || cfg.javaPath ? 'своя' : 'подбирается автоматически'}${i.lowEnd ? ' · режим слабого ПК' : ''}`, i.virtual ? linkBtn('Настройки', () => go('settings')) : linkBtn('Параметры', () => ((sub = 'options'), render()))]);
 
+  const stats = !i.virtual && h('div.stats');
+  if (stats) {
+    const tileStat = (label, value, onclick) => h(`${onclick ? 'button' : 'div'}.stat.glass`, { onclick }, h('b', {}, value), h('small', {}, label));
+    const paint = (st) => fill(stats,
+      tileStat('модов' + (st?.modsOff ? `, выкл. ${st.modsOff}` : ''), st ? String(st.mods) : '…', () => ((sub = 'mods'), render())),
+      tileStat('миров', st ? String(st.worlds) : '…'),
+      tileStat('скриншотов', st ? String(st.shots) : '…', () => ((sub = 'shots'), render())),
+      tileStat('наиграно', hours(i.playTime)),
+      tileStat('последний запуск', i.lastPlayed ? new Date(i.lastPlayed).toLocaleDateString('ru', { day: 'numeric', month: 'short' }) : 'ещё не было'),
+      tileStat('на диске', st ? (st.bytes > 1073741824 ? `${(st.bytes / 1073741824).toFixed(1)} ГБ` : `${Math.round(st.bytes / 1048576)} МБ`) : '…'),
+    );
+    paint(null);
+    call('instanceStats', i.id).then((st) => stats.isConnected && paint(st), () => {});
+  }
+  const bad = rows.filter((r) => r[0] !== 'ok').length;
   const main = h('section.panel.glass', {},
-    h('h3', {}, 'Состояние'),
-    h('div.rows', {}, rows.map(([t, text, b], n) => row(n + 1, t, text, b))),
+    h('div.panel-head', {}, h('h3', {}, 'Состояние'), h(`span.chip${bad ? '' : '.hot'}`, {}, h(`i.dot.${rows.some((r) => r[0] === 'bad') ? 'bad' : bad ? 'warn' : 'ok'}`), bad ? `Требует внимания: ${bad}` : 'Всё готово к игре')),
+    h('div.rows', {}, rows.map(([lvl, t, text, b]) => h('div.row', {}, h(`i.dot.${lvl}`), h('div.body', {}, h('b', {}, t), h('span.wrap', {}, text)), b))),
     h('div.panel-head', {}, h('h3', {}, 'Журнал игры'), linkBtn('Вся консоль', () => ((sub = 'console'), render()))),
     logBox(i.id, 8),
   );
+  if (stats) view.append(stats);
   const past = (i.isPack && pack?.history) || [];
   // Новости на главной: из сборки и посты «Новость»/«Ивент» из вкладки «Разработка», свежие сверху
   const posted = (devlog?.posts ?? []).filter((p) => p.tag === 'news' || p.tag === 'event').map((p) => ({ date: p.date, text: `${p.tag === 'event' ? '🎉 ' : ''}${p.title}${p.text ? `\n${p.text}` : ''}` }));
@@ -662,6 +737,8 @@ function panelOptions(i) {
           toast(`Подобрано под ${t.total} МБ ОЗУ и ${t.mods} модов: ${t.memory} МБ, Java — автоматически. Нажми «Сохранить».`);
         }) }, icon('wand', 20), h('span', {}, h('b', {}, 'Подобрать автоматически'), h('small', {}, 'память, флаги и Java'))),
         h('button.tool', { onclick: () => repair(i.id) }, icon('check', 20), h('span', {}, h('b', {}, 'Проверить файлы'), h('small', {}, 'найти и восстановить повреждённые'))),
+        h('button.tool', { onclick: () => act(async () => (await call('pickIcon', i.id)) && (await refresh())) }, tile(i), h('span', {}, h('b', {}, 'Сменить иконку'), h('small', {}, i.icon ? h('span.link-inline', { onclick: (e) => (e.stopPropagation(), act(async () => (await call('resetIcon', i.id), await refresh()))) }, 'вернуть обычную') : 'PNG, JPG, WebP или GIF'))),
+        !i.isPack && h('button.tool', { onclick: () => exportDialog(i) }, icon('save', 20), h('span', {}, h('b', {}, 'Экспорт'), h('small', {}, '.mrpack или .zip для Prism'))),
         h('button.tool.danger', {
           onclick: () =>
             confirmDialog(`Удалить «${i.name}»?`, 'Папка экземпляра удалится целиком: миры, скриншоты, моды и настройки. Вернуть будет нельзя.', 'Удалить навсегда', async () => {
@@ -765,7 +842,7 @@ function searchPanel(title, hint, controls, runSearch, makeButton) {
     h('select', { 'aria-label': 'Сортировка', onchange: (e) => ((browse.sort = e.target.value), run()) }, option(SORTS, browse.sort)),
     h('select', { 'aria-label': 'Категория', onchange: (e) => ((browse.category = e.target.value), run()) }, option(CATEGORIES, browse.category)),
   );
-  view.replaceChildren(h('h2', {}, title), h('p.sub', {}, hint), h('div.searchbar', {}, input, controls), filters, h('section.panel.glass', {}, list, more));
+  view.replaceChildren(h('h2', {}, title), h('p.sub', {}, hint), h('div.searchbar', {}, input, controls), filters, h('section.panel.glass', {}, list, more), h('div', { id: 'queue-bar' }));
   run();
 }
 
@@ -776,7 +853,11 @@ function viewBrowse() {
     return;
   }
   const types = h('nav.pills.glass', {}, [['mod', 'Моды'], ['resourcepack', 'Ресурспаки'], ['shader', 'Шейдеры']].map(([t, label]) => h(`button.pill${browse.type === t ? '.on' : ''}`, { onclick: () => ((browse.type = t), render()) }, label)));
-  const hint = browse.type === 'mod' && !i.loader ? `«${i.name}» без загрузчика модов — моды в нём не заработают. Создай экземпляр с Fabric, NeoForge или Forge.` : `Ставятся в «${i.name}» · Minecraft ${i.mc} · ${loaderLabel(i)}. Нужные библиотеки подтянутся сами.`;
+  const hint =
+    browse.type !== 'resourcepack' && !i.loader ? `«${i.name}» без загрузчика модов — ${browse.type === 'shader' ? 'шейдеры' : 'моды'} в нём не заработают. Создай экземпляр с Fabric, NeoForge или Forge.`
+    : browse.type === 'shader' ? `Ставятся в «${i.name}» · Minecraft ${i.mc}. Если нет Iris (или Oculus для Forge) — лаунчер поставит его сам. Включить шейдер: в игре Настройки → Графика → Пакеты шейдеров.`
+    : `Ставятся в «${i.name}» · Minecraft ${i.mc} · ${loaderLabel(i)}. Нужные библиотеки подтянутся сами. Можно набрать очередь и поставить всё разом.`;
+  if (queue.instance !== i.id) (queue.items.clear(), (queue.instance = i.id)); // очередь — для одного экземпляра
   // Что уже стоит в экземпляре: узнаём один раз до первого поиска, кнопки строятся уже с этим знанием
   let have = new Map();
   const known = browse.type === 'mod' ? call('contentInfo', i.id).then((list) => (have = new Map(list.filter((m) => m.projectId).map((m) => [m.projectId, m]))), () => {}) : Promise.resolve();
@@ -785,6 +866,19 @@ function viewBrowse() {
     (hit) => {
       const mine = have.get(hit.id);
       if (mine && !mine.update) return h('button.btn', { disabled: true, title: `Уже установлен: ${mine.file}` }, icon('check', 16), 'Установлен');
+      const inQueue = () => queue.items.has(hit.id);
+      const qbtn = h('button.btn.qbtn', {
+        title: 'Добавить в очередь и поставить потом всё разом',
+        onclick: () => {
+          if (inQueue()) queue.items.delete(hit.id);
+          else queue.items.set(hit.id, { projectId: hit.id, type: browse.type, title: hit.title });
+          paintQueueBtn();
+          paintQueue(i);
+        },
+      });
+      const paintQueueBtn = () => (qbtn.classList.toggle('on', inQueue()), qbtn.replaceChildren(icon(inQueue() ? 'check' : 'plus', 16), inQueue() ? 'В очереди' : 'В очередь'));
+      paintQueueBtn();
+      queueMicrotask(() => paintQueue(i));
       const label = mine ? `Обновить до ${mine.update.version}` : 'Установить';
       const btn = h(`button.btn${mine ? '.primary' : ''}`, {
         title: mine ? `Сейчас стоит ${mine.version}` : '',
@@ -792,12 +886,41 @@ function viewBrowse() {
           btn.disabled = true;
           btn.textContent = mine ? 'Обновляю…' : 'Ставлю…';
           const done = await act(() => (mine ? (i.isPack ? Promise.reject(new Error('Моды сборки сервера обновляют админы')) : call('updateContent', i.id, [mine.file])) : call('installProject', i.id, hit.id, browse.type)));
+          if (done?.extra) toast(`Вместе с шейдером поставлен ${done.extra} — без него шейдеры не работают`);
           btn.replaceChildren(...(done ? [icon('check', 16), 'Установлен'] : [label]));
           btn.disabled = !!done;
+          if (done) (queue.items.delete(hit.id), qbtn.remove(), paintQueue(i));
         },
       }, label);
-      return btn;
+      return mine ? btn : h('div.inline', {}, qbtn, btn);
     });
+}
+
+// Строка очереди внизу поиска: что набрано и кнопка «Установить всё»
+function paintQueue(i) {
+  const bar = $('#queue-bar');
+  if (!bar) return;
+  const items = [...queue.items.values()];
+  bar.className = items.length ? 'queue glass' : '';
+  if (!items.length) return bar.replaceChildren();
+  const busy = S.busy.includes(`queue:${i.id}`);
+  fill(bar,
+    h('div.body', {}, h('b', {}, `В очереди: ${items.length}`), h('span.muted.clamp1', {}, items.map((x) => x.title).join(', '))),
+    h('button.btn', { disabled: busy, onclick: () => (queue.items.clear(), render()) }, 'Очистить'),
+    h('button.btn.primary', { disabled: busy, onclick: (e) => installQueue(i, e.currentTarget) }, icon('play', 16), busy ? 'Ставлю…' : `Установить всё (${items.length})`),
+  );
+}
+
+async function installQueue(i, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Ставлю…';
+  const items = [...queue.items.values()];
+  const r = await act(() => call('installMany', i.id, items));
+  if (r) {
+    for (const it of items) if (!r.failed.some((f) => f.title === it.title)) queue.items.delete(it.projectId);
+    toast(`Установлено: ${r.done.length}${r.extra.length ? ` (и ${r.extra.join(', ')} для шейдеров)` : ''}${r.failed.length ? `. Не встали: ${r.failed.map((f) => `${f.title} — ${f.error}`).join('; ')}` : ''}`, r.failed.length > 0);
+  }
+  render();
 }
 
 // ---------- модпаки и новые экземпляры ----------
@@ -810,9 +933,72 @@ async function installed(promise) {
   select(inst.id);
 }
 
+// Сборка целиком из другого лаунчера: моды, настройки, миры, ресурспаки — новым экземпляром
+async function importInstanceDialog() {
+  dialog('Перенос сборки из другого лаунчера', h('p.muted', {}, 'Ищу сборки на компьютере…'), [closeBtn()]);
+  const list = (await act(() => call('instanceSources'))) ?? [];
+  if (!dlg.open) return;
+  if (!list.length) {
+    return dialog('Перенос сборки из другого лаунчера',
+      h('p.muted', {}, 'Сборок не нашлось. Ищу в Prism Launcher, MultiMC, FreesmLauncher, ATLauncher, CurseForge, FTB App, Modrinth App и Technic. Если сборка есть только файлом — нажми «Импорт файла».'),
+      [closeBtn('Понятно'), h('button.btn.primary', { onclick: () => (dlg.close(), importArchiveFile()) }, 'Импорт файла')]);
+  }
+  dlg.classList.add('wide');
+  const go = (s, btn) => act(async () => {
+    btn.disabled = true;
+    btn.textContent = 'Переношу…';
+    const inst = await call('importInstance', s.index);
+    dlg.close();
+    toast(`«${inst.name}» перенесена: моды, настройки и миры. Игру и загрузчик лаунчер скачает при первом запуске.`);
+    await refresh();
+    select(inst.id);
+  }).finally(() => btn.isConnected && (btn.disabled = false));
+  dialog('Перенос сборки из другого лаунчера',
+    h('div.stack', {},
+      h('p.muted', {}, 'Сборка станет отдельным экземпляром: переносятся моды, настройки модов, миры, ресурспаки, шейдеры и скриншоты. В старом лаунчере ничего не удаляется.'),
+      h('div.rows.scroll', {}, list.map((s) => h('div.row', {},
+        h('div.tile', {}, s.name[0]?.toUpperCase() ?? '?'),
+        h('div.body', {}, h('b', {}, s.name), h('span', {}, `${s.launcher} · Minecraft ${s.mc} · ${s.loader ? `${LOADER[s.loader.type] ?? s.loader.type} ${s.loader.version ?? ''}` : 'Vanilla'} · модов: ${s.mods}`)),
+        h('button.btn.primary', { onclick: (e) => go(s, e.currentTarget) }, 'Перенести'),
+      ))),
+    ),
+    [closeBtn('Закрыть')]);
+}
+
+async function importArchiveFile() {
+  toast('Выбери файл сборки: .mrpack (Modrinth), .zip (CurseForge, Prism, MultiMC)');
+  const r = await act(() => call('importArchive'));
+  if (!r?.inst) return;
+  toast(`«${r.inst.name}» готова${r.failed.length ? `. Не скачались моды CurseForge: ${r.failed.length} — поставь их вручную` : ''}`, r.failed.length > 0);
+  await refresh();
+  select(r.inst.id);
+}
+
+function exportDialog(i) {
+  const worlds = h('input', { type: 'checkbox' });
+  const run = (format, btn) => act(async () => {
+    btn.disabled = true;
+    const r = await call('exportInstance', i.id, format, worlds.checked);
+    if (!r) return;
+    dlg.close();
+    toast(format === 'prism' ? 'Готово — архив для Prism/MultiMC открыт в папке' : `Готово: модов по ссылкам Modrinth — ${r.linked}, внутри архива — ${r.packed}`);
+  }).finally(() => btn.isConnected && (btn.disabled = false));
+  dialog(`Экспорт «${i.name}»`,
+    h('div.stack', {},
+      h('p.muted', {}, 'Файл можно отправить другу или открыть в другом лаунчере.'),
+      h('label.check', {}, worlds, 'Положить и миры (файл станет больше)'),
+    ),
+    [
+      closeBtn(),
+      h('button.btn', { onclick: (e) => run('prism', e.currentTarget) }, 'Prism / MultiMC (.zip)'),
+      h('button.btn.primary', { onclick: (e) => run('mrpack', e.currentTarget) }, 'Modrinth (.mrpack)'),
+    ]);
+}
+
 function viewPacks() {
   const controls = [
-    h('button.btn', { onclick: () => installed(call('importMrpack')) }, 'Импорт .mrpack'),
+    h('button.btn', { onclick: importInstanceDialog }, icon('folder', 16), 'Из другого лаунчера'),
+    h('button.btn', { onclick: importArchiveFile }, 'Импорт файла'),
     h('button.btn.primary', { onclick: newInstance }, icon('plus', 16), 'Пустой экземпляр'),
   ];
   searchPanel('Модпаки', 'Готовые сборки с Modrinth ставятся отдельным экземпляром. Поддерживаются Fabric, Quilt, NeoForge и Forge.', controls,
@@ -878,6 +1064,7 @@ function viewDev() {
         h('div.chips', {}, h(`span.chip.tag-${p.tag}`, {}, DEV_TAGS[p.tag]), p.date && h('span.muted', {}, postDate(p))),
         h('h3', {}, p.title),
         p.text && h('p.post-text', {}, p.text),
+        h('span.read-more', {}, 'Читать полностью →'),
       ));
   fill(view,
     h('div.panel-head', {}, h('h2', {}, 'Разработка'), h('button.btn', { onclick: () => act(async () => ((devlog = await call('devlog')), render(), toast('Лента обновлена'))) }, icon('refresh', 16), 'Обновить')),
@@ -890,15 +1077,18 @@ function viewDev() {
   if (!devlog) call('devlog').then((d) => ((devlog = d), tab === 'dev' && render()), (e) => tab === 'dev' && fill(view, h('h2', {}, 'Разработка'), h('div.empty', {}, `Не удалось загрузить ленту: ${e.message}`)));
 }
 
+// Пост целиком: текст сразу под заголовком, картинки и видео ниже; текст можно выделять и копировать
 function openPost(p) {
   dlg.classList.add('wide');
   dialog(p.title,
-    h('div.stack.post-full', {},
+    h('div.post-full', { tabIndex: -1 },
       h('div.chips', {}, h(`span.chip.tag-${p.tag}`, {}, DEV_TAGS[p.tag]), p.date && h('span.muted', {}, postDate(p))),
-      p.media.map((m) => media(m)),
-      p.text && h('p.post-text.full', {}, p.text),
+      p.text ? h('div.post-article', {}, p.text) : h('p.muted', {}, 'Без текста.'),
+      p.media.length > 0 && h('div.post-gallery', {}, p.media.map((m) => media(m))),
     ),
-    [closeBtn('Закрыть')]);
+    [h('button.btn', { onclick: () => (navigator.clipboard.writeText(`${p.title}
+
+${p.text}`), toast('Текст поста скопирован')) }, 'Скопировать текст'), closeBtn('Закрыть')]);
 }
 
 // ---------- аккаунты ----------
@@ -908,7 +1098,7 @@ function viewAccounts() {
     h('div.panel-head', {}, h('h2', {}, 'Аккаунты'), h('button.btn.primary', { onclick: addAccount }, icon('plus', 16), 'Добавить аккаунт')),
     h('p.sub', {}, 'Можно добавить несколько и переключаться. Токены хранятся зашифрованными на этом компьютере.'),
     h('div.cards', {},
-      h('section.card.glass', {}, h('h3', {}, 'Microsoft'), h('p', {}, 'Лицензионный аккаунт Minecraft. Работает на любых серверах.'), h('button.btn.primary', { onclick: loginMicrosoft }, 'Войти')),
+      h('section.card.glass', {}, h('h3', {}, 'Microsoft'), h('p', {}, 'Лицензионный аккаунт Minecraft. Работает на любых серверах.'), S.config.azureClientId ? h('button.btn.primary', { onclick: loginMicrosoft }, 'Войти') : h('button.btn', { onclick: msHelp }, 'Как войти?')),
       h('section.card.glass', {}, h('h3', {}, 'Ely.by'), h('p', {}, 'Бесплатный аккаунт со скинами. Нужен для входа на наш сервер без лицензии.'), h('button.btn.primary', { onclick: () => loginEly() }, 'Войти')),
       h('section.card.glass', {}, h('h3', {}, 'Офлайн'), h('p', {}, 'Только ник. Для одиночной игры и серверов без проверки аккаунта.'), h('button.btn.primary', { onclick: loginOffline }, 'Добавить')),
     ),

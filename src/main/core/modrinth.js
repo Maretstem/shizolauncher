@@ -48,6 +48,53 @@ export async function installProject(root, instanceId, projectId, type = 'mod', 
   return done;
 }
 
+// Шейдеры работают через мод-загрузчик шейдеров: Iris (Fabric, Quilt, NeoForge) или Oculus (Forge).
+// Если его нет — ставим вместе с шейдером. -> имя проекта, который пришлось доставить, или null
+export async function ensureShaderLoader(root, instanceId, opts = {}) {
+  const inst = await getInstance(root, instanceId);
+  const type = inst?.loader?.type;
+  if (!type) throw new Error('Шейдерам нужен загрузчик модов: создай экземпляр с Fabric, NeoForge или Forge');
+  const project = type === 'forge' ? 'oculus' : 'iris';
+  const mods = await listContent(root, instanceId, 'mods');
+  if (mods.some((m) => new RegExp(`^${project}`, 'i').test(m.file))) return null;
+  await installProject(root, instanceId, project, 'mod', opts);
+  return project === 'iris' ? 'Iris' : 'Oculus';
+}
+
+// Очередь: ставит проекты по одному (зависимости — сами), ошибки одного не мешают остальным.
+// items: [{ projectId, type, title }] -> { done: [title], failed: [{ title, error }], extra: [имена доставленных модов] }
+export async function installMany(root, instanceId, items, opts = {}) {
+  const out = { done: [], failed: [], extra: [] };
+  const seen = new Set();
+  for (const [n, it] of items.entries()) {
+    opts.onProgress?.({ label: `Очередь: ${it.title ?? it.projectId}`, files: n, totalFiles: items.length, bytes: 0, totalBytes: 0 });
+    try {
+      if (it.type === 'shader') {
+        const extra = await ensureShaderLoader(root, instanceId, opts);
+        if (extra && !out.extra.includes(extra)) out.extra.push(extra);
+      }
+      await installProject(root, instanceId, it.projectId, it.type, { signal: opts.signal }, seen);
+      out.done.push(it.title ?? it.projectId);
+    } catch (e) {
+      if (opts.signal?.aborted) throw e;
+      out.failed.push({ title: it.title ?? it.projectId, error: e.message });
+    }
+  }
+  return out;
+}
+
+// id мода из его файла (fabric.mod.json) -> проект на Modrinth. Чаще всего slug совпадает с id;
+// иначе ищем по id среди модов под эту версию игры и загрузчик.
+export async function findProjectByModId(modId, mc, loader, api = API) {
+  const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const direct = await fetchJson(`${api}/project/${encodeURIComponent(modId)}`).catch(() => null);
+  if (direct?.project_type === 'mod') return direct.id;
+  const facets = [['project_type:mod'], ...(mc ? [[`versions:${mc}`]] : []), ...(loader ? [[`categories:${loader}`]] : [])];
+  const r = await fetchJson(`${api}/search?limit=10&query=${encodeURIComponent(modId)}&facets=${q(facets)}`).catch(() => null);
+  const hit = r?.hits?.find((h) => [h.slug, h.title].some((x) => norm(x) === norm(modId) || norm(x).replace(/lib$|api$/, '') === norm(modId)));
+  return hit?.project_id ?? null;
+}
+
 // Опознаёт моды экземпляра по хешу файла (не важно, кто их положил) и узнаёт, есть ли версии новее.
 // -> [{ file, enabled, size, projectId?, title?, update?: { version, filename, url, sha1, size } }]
 export async function contentInfo(root, instanceId, api = API) {

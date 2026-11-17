@@ -731,3 +731,111 @@ test('скин из профиля Yggdrasil', async () => {
   assert.deepEqual(skinFromProfile({ properties: [{ name: 'textures', value }] }), { url: 'https://textures.minecraft.net/texture/abc', slim: true });
   assert.equal(skinFromProfile({ properties: [] }), null);
 });
+
+test('перенос сборок: форматы лаунчеров, экспорт Prism и обратный импорт, .mrpack', async () => {
+  const fs = await import('node:fs/promises');
+  const os = await import('node:os');
+  const http = await import('node:http');
+  const { createHash } = await import('node:crypto');
+  const { parseLoader, findInstances, launcherDirs, importInstance, exportPrism, importArchive, exportMrpack } = await import('../src/main/core/transfer.js');
+  const { gameDir, setIcon, instanceStats } = await import('../src/main/core/instances.js');
+  const { unzip } = await import('../src/main/core/net.js');
+  assert.deepEqual(parseLoader('fabric-0.16.9-1.21.1'), { type: 'fabric', version: '0.16.9' });
+  assert.deepEqual(parseLoader('forge-1.20.1-47.2.0'), { type: 'forge', version: '47.2.0' });
+  assert.deepEqual(parseLoader('neoforge-21.1.77'), { type: 'neoforge', version: '21.1.77' });
+  assert.equal(parseLoader('vanilla'), null);
+
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'shizo-transfer-'));
+  const w = async (p, data) => {
+    await fs.mkdir(path.dirname(path.join(tmp, p)), { recursive: true });
+    await fs.writeFile(path.join(tmp, p), data);
+  };
+  try {
+    // Prism, CurseForge, ATLauncher и FTB — каждый со своим файлом описания
+    await w('app/PrismLauncher/instances/Магия/mmc-pack.json', JSON.stringify({ components: [{ uid: 'net.minecraft', version: '1.20.1' }, { uid: 'net.fabricmc.fabric-loader', version: '0.15.0' }] }));
+    await w('app/PrismLauncher/instances/Магия/instance.cfg', 'InstanceType=OneSix\nname=Магия\n');
+    await w('app/PrismLauncher/instances/Магия/.minecraft/mods/a.jar', 'A');
+    await w('app/PrismLauncher/instances/Магия/.minecraft/saves/Мир/level.dat', 'L');
+    await w('app/PrismLauncher/instances/Магия/.minecraft/logs/latest.log', 'не переносить');
+    await w('home/curseforge/minecraft/Instances/CF/minecraftinstance.json', JSON.stringify({ name: 'CF', gameVersion: '1.20.1', baseModLoader: { name: 'forge-47.2.0' } }));
+    await w('app/ATLauncher/instances/AT/instance.json', JSON.stringify({ id: '1.19.2', launcher: { name: 'AT pack', loaderVersion: { type: 'Fabric', version: '0.14.0' } } }));
+    await w('local/.ftba/instances/x1/instance.json', JSON.stringify({ name: 'FTB pack', mcVersion: '1.21.1', modLoader: 'neoforge-21.1.77' }));
+    await w('app/PrismLauncher/instances/мусор/readme.txt', 'не сборка');
+    const found = await findInstances(launcherDirs({ APPDATA: path.join(tmp, 'app'), LOCALAPPDATA: path.join(tmp, 'local') }, path.join(tmp, 'home')));
+    assert.deepEqual(found.map((f) => [f.launcher, f.name, f.mc, f.loader?.type, f.loader?.version, f.mods]), [
+      ['Prism Launcher', 'Магия', '1.20.1', 'fabric', '0.15.0', 1],
+      ['ATLauncher', 'AT pack', '1.19.2', 'fabric', '0.14.0', 0],
+      ['CurseForge', 'CF', '1.20.1', 'forge', '47.2.0', 0],
+      ['FTB App', 'FTB pack', '1.21.1', 'neoforge', '21.1.77', 0],
+    ]);
+
+    const root = path.join(tmp, 'root');
+    const inst = await importInstance(root, found[0]);
+    const dir = gameDir(root, inst.id);
+    assert.deepEqual([inst.mc, inst.loader, inst.importedFrom], ['1.20.1', { type: 'fabric', version: '0.15.0' }, 'Prism Launcher']);
+    assert.equal(await fs.readFile(path.join(dir, 'mods/a.jar'), 'utf8'), 'A');
+    assert.equal(await fs.readFile(path.join(dir, 'saves/Мир/level.dat'), 'utf8'), 'L');
+    await assert.rejects(fs.access(path.join(dir, 'logs')), 'логи не переносятся');
+    const st = await instanceStats(root, inst.id);
+    assert.deepEqual([st.mods, st.worlds, st.shots], [1, 1, 0]);
+
+    // Иконка
+    await w('pic.png', 'PNG');
+    assert.match((await setIcon(root, inst.id, path.join(tmp, 'pic.png'))).icon, /^icon\.png\?v=\d+$/);
+    await assert.rejects(setIcon(root, inst.id, path.join(tmp, 'app/PrismLauncher/instances/мусор/readme.txt')), /картинка/i);
+    assert.equal((await setIcon(root, inst.id, null)).icon, null);
+
+    // Экспорт для Prism и импорт этого же архива обратно — без миров
+    const zip = path.join(tmp, 'out.zip');
+    await exportPrism(root, inst.id, zip);
+    const back = await importArchive(root, zip);
+    assert.deepEqual([back.inst.name, back.inst.mc, back.inst.loader.type, back.failed], ['Магия', '1.20.1', 'fabric', []]);
+    assert.equal(await fs.readFile(path.join(gameDir(root, back.inst.id), 'mods/a.jar'), 'utf8'), 'A');
+    await assert.rejects(fs.access(path.join(gameDir(root, back.inst.id), 'saves')), 'миры не экспортировались');
+
+    // .mrpack: мод, известный Modrinth, — ссылкой; неизвестный и настройки — внутри архива
+    await w(`root/instances/${inst.id}/.minecraft/mods/known.jar`, 'KNOWN');
+    await w(`root/instances/${inst.id}/.minecraft/config/x.toml`, 'cfg=1');
+    const sha1 = createHash('sha1').update('KNOWN').digest('hex');
+    const server = http.createServer((req, res) => res.end(JSON.stringify({ [sha1]: { files: [{ hashes: { sha1 }, url: 'https://cdn.modrinth.com/data/x/known.jar', size: 5 }] } })));
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const mr = path.join(tmp, 'out.mrpack');
+      const r = await exportMrpack(root, inst.id, mr, { api: `http://127.0.0.1:${server.address().port}` });
+      assert.deepEqual([r.linked, r.packed], [1, 1]);
+      const un = path.join(tmp, 'un');
+      await fs.mkdir(un);
+      await unzip(mr, un);
+      const index = JSON.parse(await fs.readFile(path.join(un, 'modrinth.index.json'), 'utf8'));
+      assert.deepEqual([index.dependencies, index.files.map((f) => f.path)], [{ minecraft: '1.20.1', 'fabric-loader': '0.15.0' }, ['mods/known.jar']]);
+      assert.equal(await fs.readFile(path.join(un, 'overrides/mods/a.jar'), 'utf8'), 'A');
+      assert.equal(await fs.readFile(path.join(un, 'overrides/config/x.toml'), 'utf8'), 'cfg=1');
+    } finally {
+      server.close();
+    }
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('проверка модов: исправление по кнопке — дубли оставляют новую версию, зависимости ищутся на Modrinth', async () => {
+  const http = await import('node:http');
+  const { findProblems } = await import('../src/main/core/modcheck.js');
+  const { findProjectByModId } = await import('../src/main/core/modrinth.js');
+  const mod = (id, version, file, depends = []) => ({ id, version, file, name: id, provides: [], versions: {}, depends, breaks: {}, loaders: new Set(['fabric']) });
+  const problems = findProblems([mod('sodium', '0.5.8', 'sodium-0.5.8.jar'), mod('sodium', '0.6.0', 'sodium-0.6.0.jar'), mod('xaero', '1.0', 'x.jar', ['owo'])], 'fabric');
+  assert.deepEqual(problems.map((p) => p.action), [{ type: 'remove', files: ['sodium-0.5.8.jar'] }, { type: 'deps', ids: ['owo'] }]);
+
+  const server = http.createServer((req, res) => {
+    if (req.url.startsWith('/project/')) return res.writeHead(404).end('{}');
+    res.end(JSON.stringify({ hits: [{ slug: 'something', title: 'Другое', project_id: 'no' }, { slug: 'owo-lib', title: 'owo-lib', project_id: 'P1' }] }));
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const api = `http://127.0.0.1:${server.address().port}`;
+  try {
+    assert.equal(await findProjectByModId('owo', '1.21.1', 'fabric', api), 'P1');
+    assert.equal(await findProjectByModId('nothing-like-it', '1.21.1', 'fabric', api), null);
+  } finally {
+    server.close();
+  }
+});

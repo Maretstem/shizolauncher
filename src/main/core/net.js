@@ -61,6 +61,8 @@ export function safeJoin(base, rel) {
 const TAR = process.platform === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : process.platform === 'linux' ? 'bsdtar' : 'tar';
 // member — достать из архива только один файл
 export const unzip = (file, dest, member) => promisify(execFile)(TAR, ['-xf', file, '-C', dest, ...(member ? [member] : [])]);
+// Zip-архив из перечисленных файлов и папок внутри cwd (имена без «./» в начале — так их читают другие лаунчеры)
+export const zipFiles = (file, cwd, members) => promisify(execFile)(TAR, ['--format', 'zip', '-cf', file, '-C', cwd, ...members], { maxBuffer: 1 << 26 });
 
 export function httpsUrl(url, base) {
   const u = new URL(url, base);

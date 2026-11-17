@@ -147,15 +147,18 @@ export function findProblems(mods, loader) {
     owners.set(m.id, [...(owners.get(m.id) ?? []), m.file]);
   }
   for (const [id, files] of owners) {
-    if (files.length > 1) problems.push({ level: 'error', text: `Мод «${id}» установлен ${files.length} раза`, fix: `Оставь один из файлов: ${files.join(', ')}` });
+    if (files.length < 2) continue;
+    // Оставляем самую новую версию, остальные — в корзину по кнопке
+    const copies = mods.filter((m) => m.id === id).sort((a, b) => compareVersions(b.version ?? '0', a.version ?? '0'));
+    problems.push({ level: 'error', text: `Мод «${id}» установлен ${files.length} раза`, fix: `Оставлю самую новую версию — ${copies[0].file}, остальные уберу в корзину`, action: { type: 'remove', files: copies.slice(1).map((m) => m.file) } });
   }
   for (const m of mods) {
     if (loader && !m.loaders.has(loader)) {
-      problems.push({ level: 'error', text: `«${m.name}» сделан для ${[...m.loaders].map((l) => LOADER_NAME[l]).join('/')}, а сборка на ${LOADER_NAME[loader] ?? loader}`, fix: `Выключи или удали ${m.file}` });
+      problems.push({ level: 'error', text: `«${m.name}» сделан для ${[...m.loaders].map((l) => LOADER_NAME[l]).join('/')}, а сборка на ${LOADER_NAME[loader] ?? loader}`, fix: `Уберу ${m.file} в корзину`, action: { type: 'remove', files: [m.file] } });
       continue; // зависимости чужого загрузчика сравнивать бессмысленно
     }
     const missing = m.depends.filter((d) => !have.has(d));
-    if (missing.length) problems.push({ level: 'error', text: `Моду «${m.name}» не хватает: ${missing.join(', ')}`, fix: 'Найди и поставь эти моды во вкладке «Моды» или выключи этот мод' });
+    if (missing.length) problems.push({ level: 'error', text: `Моду «${m.name}» не хватает: ${missing.join(', ')}`, fix: 'Докачаю их с Modrinth. Если не найдутся — выключи этот мод.', action: { type: 'deps', ids: missing } });
     for (const [b, pred] of Object.entries(m.breaks)) {
       if (b === m.id || !have.has(b) || !satisfies(have.get(b) ?? '', pred)) continue;
       problems.push({ level: 'error', text: `«${m.name}» несовместим с «${b}»${have.get(b) ? ` версии ${have.get(b)}` : ''}`, fix: 'Выключи один из этих модов или обнови его' });
