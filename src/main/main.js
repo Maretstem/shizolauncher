@@ -33,7 +33,7 @@ app.setPath('userData', path.join(ROOT, 'electron'));
 useFetch((url, init) => net.fetch(url, init));
 
 const brand = JSON.parse(readFileSync(path.join(here, '../../launcher.config.json'), 'utf8'));
-const DEFAULTS = { memory: 4096, javaPath: '', jvmArgs: '', autoJoin: true, selected: null, current: PACK_ID, theme: 'sunset', accent: '', bgImage: '', bgBlur: 0, bgDim: 45, autoClean: true, bgUpdate: true, discordPresence: true, modCheck: true, autostart: false, closeToTray: false, notifications: true, notify: { launcher: true, pack: true, news: true, devlog: true }, onLaunch: 'keep', gameWidth: 0, gameHeight: 0, gameFullscreen: false, uiMode: 'modern', sortBy: 'played', collapsedGroups: [], showLogo: true };
+const DEFAULTS = { memory: 4096, javaPath: '', jvmArgs: '', autoJoin: true, selected: null, current: PACK_ID, theme: 'sunset', accent: '', bgImage: '', bgBlur: 0, bgDim: 45, autoClean: true, bgUpdate: true, discordPresence: true, modCheck: true, autostart: false, closeToTray: false, notifications: true, notify: { launcher: true, pack: true, news: true, devlog: true }, onLaunch: 'keep', gameWidth: 0, gameHeight: 0, gameFullscreen: false, uiMode: 'modern', sortBy: 'played', collapsedGroups: [], showServerPack: true };
 const HOSTS = { 'Серверы Minecraft': 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json', Fabric: 'https://meta.fabricmc.net/v2/versions/loader', Modrinth: 'https://api.modrinth.com/v2/tag/loader', 'Ely.by': 'https://authserver.ely.by/' };
 // Картинки с диска (скриншоты, свой фон) окно получает только через эту схему — прямого доступа к файлам у него нет
 protocol.registerSchemesAsPrivileged([{ scheme: 'shizo', privileges: { standard: true, secure: true } }]);
@@ -436,7 +436,7 @@ const handlers = {
           timestamps: { start: Date.now() },
           assets: { large_image: 'logo', large_text: cfg.serverName },
           buttons: cfg.links?.discord ? [{ label: `Discord ${cfg.serverName}`, url: cfg.links.discord }] : undefined,
-        }).catch(() => null);
+        }, { pid: child.pid }).catch(() => null);
         if (!games.has(id)) presence?.stop(); // игра успела закрыться, пока подключались к Discord
       }
     });

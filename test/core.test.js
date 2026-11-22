@@ -642,11 +642,12 @@ test('статус Discord: рукопожатие и установка акт�
   try {
     assert.equal(await showPresence('', {}, { prefix }), null); // ID не задан
     assert.equal(await showPresence('bad', {}, { prefix }), null);
-    const p = await showPresence('good', { details: 'Играет на SHIZOSTAN' }, { prefix });
+    const p = await showPresence('good', { details: 'Играет на SHIZOSTAN' }, { prefix, pid: 4242 });
     assert.ok(p);
     await new Promise((r) => setTimeout(r, 100));
     const set = got.find(([op, m]) => op === 1 && m.cmd === 'SET_ACTIVITY');
     assert.equal(set[1].args.activity.details, 'Играет на SHIZOSTAN');
+    assert.equal(set[1].args.pid, 4242); // статус привязан к процессу игры, а не лаунчера
     p.stop();
     assert.equal(await showPresence('good', {}, { prefix: `\\\\?\\pipe\\shizo-nobody-${process.pid}-`, timeout: 500 }), null); // Discord не запущен
   } finally {

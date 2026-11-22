@@ -135,17 +135,23 @@ const compact = new Intl.NumberFormat('ru', { notation: 'compact' });
 const mb = (bytes) => `${(bytes / 1048576).toFixed(1)} МБ`;
 const loaderLabel = (i) => (i.loader ? `${LOADER[i.loader.type] ?? i.loader.type} ${i.loader.version ?? ''}`.trim() : 'Vanilla');
 
+// Сборку сервера игрок может убрать из списка (настройка «Показывать сборку сервера»)
+const showPack = () => S.config.showServerPack !== false;
 function entries() {
   const own = S.instances.find((i) => i.id === S.packId) ?? { id: S.packId, name: S.config.serverName, virtual: true };
-  return [{ ...own, isPack: true }, ...S.instances.filter((i) => i.id !== S.packId)];
+  const rest = S.instances.filter((i) => i.id !== S.packId);
+  return showPack() ? [{ ...own, isPack: true }, ...rest] : rest;
 }
-const cur = () => entries().find((i) => i.id === S.config.current) ?? entries()[0];
+// Выбранная сборка; null — если список пуст (сборка сервера скрыта и своих нет)
+const cur = () => entries().find((i) => i.id === S.config.current) ?? entries()[0] ?? null;
 const SORT_BY = { played: 'Недавно запущенные', name: 'По названию', created: 'Новые сначала' };
 const sorters = { played: (a, b) => (b.lastPlayed ?? b.created ?? 0) - (a.lastPlayed ?? a.created ?? 0), name: (a, b) => a.name.localeCompare(b.name, 'ru'), created: (a, b) => (b.created ?? 0) - (a.created ?? 0) };
 // Сборка сервера всегда первой, дальше без группы, потом группы по алфавиту. -> [[название группы | '', [экземпляры]]]
 function grouped() {
-  const [own, ...rest] = entries();
-  const groups = new Map([['', [own]]]);
+  const all = entries();
+  const own = all.find((i) => i.isPack);
+  const rest = all.filter((i) => !i.isPack);
+  const groups = new Map([['', own ? [own] : []]]);
   for (const i of [...rest].sort(sorters[S.config.sortBy] ?? sorters.played)) {
     const g = i.group || '';
     if (!groups.has(g)) groups.set(g, []);
@@ -181,7 +187,6 @@ function applyStyle() {
   root.style.setProperty('--bg-dim', String((Number(c.bgDim) || 0) / 100));
   $('#sky').classList.toggle('custom', !!c.bgImage);
   document.body.classList.toggle('classic', c.uiMode === 'classic');
-  $('#title-logo').hidden = c.showLogo === false;
 }
 
 async function refresh() {
@@ -254,7 +259,7 @@ function instStatus(i) {
 }
 
 function renderSide() {
-  const active = cur().id;
+  const active = cur()?.id;
   const collapsed = new Set(S.config.collapsedGroups ?? []);
   const item = (i) => {
     const [dot, text] = instStatus(i);
@@ -566,41 +571,92 @@ function subtitle(i) {
   return 'Официальная сборка сервера: ставится и обновляется одной кнопкой';
 }
 
+let classicFilter = '';
 function viewClassic() {
   const i = cur();
   const collapsed = new Set(S.config.collapsedGroups ?? []);
-  const cell = (x) => h(`button.cell${x.id === i.id ? '.on' : ''}`, { onclick: () => select(x.id), ondblclick: () => play(x.id), title: 'Двойной щелчок — играть' }, tile(x), h('b', {}, x.name), h('small', {}, instStatus(x)[1]));
-  const action = (label, ic, fn, cls = '') => h(`button.tool${cls}`, { onclick: fn }, icon(ic, 18), h('span', {}, h('b', {}, label)));
+  const q = classicFilter.toLowerCase();
+  const cell = (x) => h(`button.cell${x.id === i.id ? '.on' : ''}`, { onclick: () => select(x.id), ondblclick: () => play(x.id), title: `${x.name} — двойной щелчок, чтобы играть` },
+    tile(x), h('b', {}, x.name), S.running.includes(x.id) && h('i.dot.ok.cell-dot'));
+  const tool = (label, ic, fn) => h('button.ptool', { onclick: fn }, icon(ic, 16), label);
+  const side = (label, ic, fn, cls = '') => h(`button.pbtn${cls}`, { onclick: fn }, icon(ic, 16), label);
+  const open = (to) => () => ((classicOpen = true), (sub = to), render());
+  const groups = grouped().map(([g, list]) => [g, list.filter((x) => !q || x.name.toLowerCase().includes(q))]).filter(([, list]) => list.length);
+  const played = S.instances.reduce((n, x) => n + (x.playTime ?? 0), 0);
+  const acc = account();
+  const busy = S.busy.includes(i.id);
   fill(view,
-    h('div.classic-view', {},
-      h('div.classic-grid', {},
-        h('div.panel-head', {}, h('h2', {}, 'Сборки'), h('div.inline', {},
-          h('button.btn', { onclick: newInstance }, icon('plus', 16), 'Добавить'),
-          h('button.btn', { onclick: importInstanceDialog }, 'Перенести'),
-          h('button.btn', { onclick: importArchiveFile }, 'Импорт файла'),
-        )),
-        grouped().map(([g, list]) => h('section.classic-group', {},
-          g && h('button.group-head', { onclick: () => (toggleGroup(g), render()) }, h('span.chev', {}, collapsed.has(g) ? '▸' : '▾'), g, h('small', {}, String(list.length))),
-          !(g && collapsed.has(g)) && h('div.cells', {}, list.map(cell)),
-        )),
+    h('div.prism', {},
+      h('div.ptoolbar.glass', {},
+        tool('Добавить сборку', 'plus', newInstance),
+        tool('Перенести', 'folder', importInstanceDialog),
+        tool('Импорт', 'save', importArchiveFile),
+        tool('Модпаки', 'grid', () => go('packs')),
+        h('span.psep'),
+        tool('Папка лаунчера', 'folder', () => act(() => call('openFolder'))),
+        h('input.pfilter', { type: 'search', placeholder: 'Фильтр…', value: classicFilter, 'aria-label': 'Фильтр сборок', oninput: (e) => { classicFilter = e.target.value; const pos = e.target.selectionStart; viewClassic(); const inp = $('.pfilter'); inp.focus(); inp.setSelectionRange(pos, pos); } }),
       ),
-      h('aside.classic-side.glass', {},
-        h('div.classic-head', {}, tile(i), h('b', {}, i.name), h('small', {}, i.isPack ? `Сервер · ${i.pack?.version ?? pack?.latest ?? ''}` : `${i.mc} · ${loaderLabel(i)}`)),
-        playButton(i),
-        S.busy.includes(i.id) && h('div.progress', { id: 'prog' }, h('div.bar.wait', {}, h('div')), h('span.muted', {}, 'Подготовка…')),
-        action('Открыть сборку', 'grid', () => ((classicOpen = true), (sub = 'overview'), render())),
-        !i.virtual && action('Моды', 'sliders', () => ((classicOpen = true), (sub = 'mods'), render())),
-        !i.virtual && action('Папка', 'folder', () => act(() => call('openFolder', i.id))),
-        action('Ярлык на рабочий стол', 'link', () => makeShortcut(i)),
-        !i.virtual && !i.isPack && action('Экспорт', 'save', () => exportDialog(i)),
-        !i.virtual && action('Параметры', 'wand', () => ((classicOpen = true), (sub = 'options'), render())),
+      h('div.pbody', {},
+        h('div.pgrid', {},
+          groups.length ? groups.map(([g, list]) => h('section.pgroup', {},
+            h('button.pghead', { onclick: () => (toggleGroup(g || 'Без группы'), render()) }, h('span.chev', {}, collapsed.has(g || 'Без группы') ? '▸' : '▾'), g || 'Без группы', h('span.pgline')),
+            !collapsed.has(g || 'Без группы') && h('div.cells', {}, list.map(cell)),
+          )) : h('div.empty', {}, 'Ничего не нашлось.'),
+        ),
+        h('aside.pside.glass', {},
+          h('div.pside-head', {}, tile(i), h('b', {}, i.name), h('small', {}, i.isPack ? `Сервер · сборка ${i.pack?.version ?? pack?.latest ?? '—'}` : `${i.mc} · ${loaderLabel(i)}`)),
+          S.running.includes(i.id)
+            ? side('Остановить', 'stop', () => (stopping.add(i.id), call('stop', i.id)), '.danger')
+            : busy ? side('Отмена', 'stop', () => call('cancel', i.id)) : side(i.virtual ? 'Установить' : 'Играть', 'play', () => play(i.id), '.go'),
+          busy && h('div.progress', { id: 'prog' }, h('div.bar.wait', {}, h('div')), h('span.muted', {}, 'Подготовка…')),
+          h('hr'),
+          side('Открыть сборку', 'grid', open('overview')),
+          !i.virtual && side('Моды', 'sliders', open('mods')),
+          !i.virtual && side('Ресурспаки', 'grid', open('resourcepacks')),
+          !i.virtual && side('Шейдеры', 'wand', open('shaderpacks')),
+          !i.virtual && side('Скриншоты', 'folder', open('shots')),
+          side('Консоль', 'terminal', open('console')),
+          h('hr'),
+          !i.virtual && side('Папка сборки', 'folder', () => act(() => call('openFolder', i.id))),
+          side('Ярлык на рабочий стол', 'link', () => makeShortcut(i)),
+          !i.virtual && !i.isPack && side('Экспорт', 'save', () => exportDialog(i)),
+          !i.isPack && side('Сменить группу', 'sort', () => groupDialog(i)),
+          !i.virtual && side('Параметры', 'sliders', open('options')),
+          !i.virtual && !i.isPack && side('Удалить', 'trash', () => confirmDialog(`Удалить «${i.name}»?`, 'Папка сборки удалится целиком: миры, скриншоты, моды и настройки. Вернуть будет нельзя.', 'Удалить навсегда', async () => { await call('removeInstance', i.id); await refresh(); }), '.danger'),
+        ),
+      ),
+      h('div.pstatus.glass', {},
+        h('span', {}, `Сборок: ${entries().length}`),
+        h('span', {}, `Наиграно всего: ${hours(played)}`),
+        h('span', {}, acc ? `Аккаунт: ${acc.name} (${accountLabel(acc)})` : 'Аккаунт не выбран'),
+        h('span.pstatus-ver', {}, `ShizoLauncher ${S.version}`),
       ),
     ),
   );
-  if (S.busy.includes(i.id)) ($('#prog').dataset.id = i.id), paintProgress();
+  if (busy) ($('#prog').dataset.id = i.id), paintProgress();
+}
+
+function groupDialog(i) {
+  const input = h('input', { type: 'text', value: i.group ?? '', maxLength: 30, placeholder: 'Без группы', list: 'groups-dlg' });
+  dialog(`Группа для «${i.name}»`,
+    h('div.stack', {}, h('label.field', {}, 'Название группы', input, h('datalist', { id: 'groups-dlg' }, knownGroups().map((g) => h('option', { value: g })))), h('p.muted', {}, 'Пустое поле — убрать из группы. Группы сворачиваются щелчком по заголовку.')),
+    [closeBtn(), h('button.btn.primary', { onclick: () => act(async () => { await call('setGroup', i.id, input.value); dlg.close(); await refresh(); }) }, 'Сохранить')]);
+}
+
+function emptyHome() {
+  fill(view,
+    h('h2', {}, 'Сборок пока нет'),
+    h('p.sub', {}, 'Создай свою сборку, поставь модпак или перенеси сборку из другого лаунчера. Сборку сервера можно вернуть в настройках → «Оформление».'),
+    h('div.actions', {},
+      h('button.btn.primary', { onclick: newInstance }, icon('plus', 16), 'Новая сборка'),
+      h('button.btn', { onclick: () => go('packs') }, 'Модпаки'),
+      h('button.btn', { onclick: importInstanceDialog }, 'Из другого лаунчера'),
+    ),
+  );
 }
 
 function viewHome() {
+  if (!cur()) return emptyHome();
   if (S.config.uiMode === 'classic' && !classicOpen) return viewClassic();
   const i = cur();
   const busy = S.busy.includes(i.id);
@@ -979,7 +1035,7 @@ function searchPanel(title, hint, controls, runSearch, makeButton, into) {
 
 function viewBrowse(into) {
   const i = cur();
-  if (i.virtual) {
+  if (!i || i.virtual) {
     view.replaceChildren(h('h2', {}, 'Моды'), h('p.sub', {}, 'Сначала установи сборку сервера или выбери экземпляр слева — моды ставятся в выбранную сборку.'));
     return;
   }
@@ -1368,7 +1424,7 @@ function viewSettings() {
         h('label.field', {}, 'Вид лаунчера', h('select', { onchange: (e) => ((classicOpen = false), restyle({ uiMode: e.target.value })) }, option({ modern: 'Современный — список сборок слева', classic: 'Классический, как Prism — сетка сборок' }, cfg.uiMode))),
         h('label.field', {}, 'Порядок сборок', h('select', { onchange: (e) => restyle({ sortBy: e.target.value }) }, option(SORT_BY, cfg.sortBy))),
       ),
-      h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.showLogo !== false, onchange: (e) => restyle({ showLogo: e.target.checked }) }), 'Надпись SHIZOLAUNCHER в заголовке окна'),
+      h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.showServerPack !== false, onchange: (e) => restyle({ showServerPack: e.target.checked }) }), `Показывать сборку сервера ${cfg.serverName} в списке`),
       h('div.themes', {}, Object.entries(THEMES).map(([id, label]) => h(`button.theme.t-${id}${cfg.theme === id ? '.on' : ''}`, { 'aria-pressed': String(cfg.theme === id), onclick: () => restyle({ theme: id }) }, h('i'), label))),
       h('div.form', {},
         h('label.field', {}, 'Свой цвет кнопок', h('div.inline', {}, h('input', { type: 'color', value: /^#[0-9a-f]{6}$/i.test(cfg.accent) ? cfg.accent : '#f03fd0', onchange: (e) => restyle({ accent: e.target.value }) }), h('button.btn', { type: 'button', onclick: () => restyle({ accent: '' }) }, 'Как в теме'))),

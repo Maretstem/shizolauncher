@@ -356,8 +356,10 @@ button.stat:hover { background: var(--glass-2); }
 .link-inline { color: var(--pink); text-decoration: underline; cursor: pointer; }
 .way.off { opacity: 1; cursor: pointer; text-align: left; }
 
-/* ---- надпись SHIZOLAUNCHER в заголовке окна ---- */
-.title-logo { position: absolute; left: 22px; top: 9px; height: 24px; image-rendering: pixelated; pointer-events: none; filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.45)); }
+/* ---- заголовок окна: тёмная полоса со значком и названием ---- */
+body::before { content: ""; position: fixed; inset: 0 0 auto 0; height: 40px; background: rgba(8, 5, 20, 0.72); border-bottom: 1px solid var(--line); z-index: 0; pointer-events: none; }
+.titlebar { display: flex; align-items: center; gap: 9px; padding-left: 16px; height: 40px; z-index: 1; color: var(--muted); font-size: 12.5px; font-weight: 600; letter-spacing: 0.2px; }
+.tb-icon { width: 18px; height: 18px; border-radius: 4px; image-rendering: pixelated; }
 
 /* ---- группы сборок ---- */
 .group-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 10px 4px; color: var(--muted); font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px; text-align: left; }
@@ -375,9 +377,6 @@ input.filter { margin: 4px 0 2px; }
 
 /* ---- классический вид, как Prism ---- */
 body.classic .side { display: none; }
-.classic-view { display: grid; grid-template-columns: 1fr 250px; gap: 18px; align-items: start; }
-.classic-grid { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.classic-group { display: flex; flex-direction: column; gap: 6px; }
 .cells { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; }
 .cell { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 8px 10px; border-radius: 14px; background: var(--glass); border: 1px solid var(--line); text-align: center; min-width: 0; }
 .cell:hover { background: var(--glass-2); }
@@ -385,11 +384,39 @@ body.classic .side { display: none; }
 .cell .tile { width: 64px; height: 64px; font-size: 26px; border-radius: 14px; }
 .cell b { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cell small { color: var(--muted); font-size: 11.5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.classic-side { position: sticky; top: 0; padding: 16px; border-radius: 18px; display: flex; flex-direction: column; gap: 8px; }
-.classic-head { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; margin-bottom: 6px; }
-.classic-head .tile { width: 84px; height: 84px; font-size: 34px; border-radius: 18px; }
-.classic-head b { font-size: 17px; }
-.classic-head small { color: var(--muted); }
-.classic-side .play { width: 100%; justify-content: center; padding: 14px; font-size: 17px; }
-.classic-side .tool { width: 100%; }
-.classic-side .play { min-width: 0; height: 54px; }
+
+/* ---- классический вид, ближе к Prism: панель инструментов, сетка, список действий, строка состояния ---- */
+.prism { display: flex; flex-direction: column; gap: 12px; min-height: 100%; }
+.ptoolbar { display: flex; align-items: center; gap: 2px; padding: 6px; border-radius: 14px; }
+.ptool { display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px; border-radius: 9px; color: var(--muted); font-weight: 600; font-size: 13px; white-space: nowrap; }
+.ptool:hover { background: var(--glass-2); color: var(--text); }
+.psep { width: 1px; height: 22px; background: var(--line); margin: 0 6px; }
+.pfilter { margin-left: auto; width: 220px; padding: 7px 12px !important; }
+.pbody { display: grid; grid-template-columns: minmax(0, 1fr) 236px; gap: 12px; align-items: start; flex: 1; }
+.pgrid { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pgroup { display: flex; flex-direction: column; gap: 4px; }
+.pghead { display: flex; align-items: center; gap: 8px; padding: 6px 4px; color: var(--muted); font-size: 12.5px; font-weight: 700; text-align: left; }
+.pghead:hover { color: var(--text); }
+.pgline { flex: 1; height: 1px; background: var(--line); }
+.prism .cells { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 6px; }
+.prism .cell { position: relative; padding: 12px 6px 10px; border-radius: 10px; background: transparent; border: 1px solid transparent; gap: 7px; }
+.prism .cell:hover { background: var(--glass); border-color: var(--line); }
+.prism .cell.on { background: color-mix(in srgb, var(--pink) 18%, transparent); border-color: color-mix(in srgb, var(--pink) 55%, transparent); box-shadow: none; }
+.prism .cell .tile { width: 56px; height: 56px; border-radius: 12px; font-size: 22px; }
+.prism .cell b { font-weight: 600; font-size: 12.5px; white-space: normal; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.cell-dot { position: absolute; top: 8px; right: 8px; }
+.pside { position: sticky; top: 0; padding: 12px; border-radius: 14px; display: flex; flex-direction: column; gap: 2px; }
+.pside hr { border: 0; border-top: 1px solid var(--line); margin: 6px 2px; width: auto; }
+.pside-head { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 6px 4px 12px; text-align: center; }
+.pside-head .tile { width: 72px; height: 72px; border-radius: 16px; font-size: 30px; }
+.pside-head b { font-size: 15px; }
+.pside-head small { color: var(--muted); font-size: 12px; }
+.pbtn { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 9px; text-align: left; font-weight: 600; font-size: 13px; color: var(--text); }
+.pbtn .ic { color: var(--muted); }
+.pbtn:hover { background: var(--glass-2); }
+.pbtn.go { justify-content: center; padding: 11px; margin-bottom: 4px; background: var(--grad); color: #fff; font-size: 15px; }
+.pbtn.go .ic { color: #fff; }
+.pbtn.go:hover { filter: brightness(1.08); }
+.pbtn.danger, .pbtn.danger .ic { color: var(--bad); }
+.pstatus { display: flex; gap: 18px; padding: 8px 14px; border-radius: 12px; font-size: 12px; color: var(--muted); }
+.pstatus-ver { margin-left: auto; }

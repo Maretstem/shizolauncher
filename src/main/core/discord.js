@@ -14,7 +14,9 @@ export function frame(op, data) {
 const pipes = (prefix) => Array.from({ length: 10 }, (_, i) => `${prefix}${i}`);
 
 // Подключается к запущенному Discord и выставляет статус. -> { stop() } или null, если Discord не запущен.
-export function showPresence(clientId, activity, { prefix = '\\\\?\\pipe\\discord-ipc-', timeout = 3000 } = {}) {
+// pid — процесс самой игры: по нему Discord понимает, что человек играет, и даёт друзьям смотреть трансляцию.
+// С pid лаунчера друзья на запросе трансляции видели «Не играет».
+export function showPresence(clientId, activity, { prefix = '\\\\?\\pipe\\discord-ipc-', timeout = 3000, pid = process.pid } = {}) {
   if (!clientId) return Promise.resolve(null);
   const tryPipe = (list) =>
     new Promise((resolve) => {
@@ -36,7 +38,7 @@ export function showPresence(clientId, activity, { prefix = '\\\\?\\pipe\\discor
             if (!ready && msg.evt === 'READY') {
               ready = true;
               clearTimeout(timer);
-              sock.write(frame(1, { cmd: 'SET_ACTIVITY', args: { pid: process.pid, activity }, nonce: randomUUID() }));
+              sock.write(frame(1, { cmd: 'SET_ACTIVITY', args: { pid, activity }, nonce: randomUUID() }));
               resolve({ stop: () => sock.end() });
             } else if (!ready && msg.evt === 'ERROR') {
               clearTimeout(timer);
