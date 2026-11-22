@@ -885,3 +885,38 @@ test('свой скин офлайн-аккаунта: локальный сер
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test('Horizon: последний релиз лаунчера и проверка SHA-256', async () => {
+  const fs = await import('node:fs/promises');
+  const os = await import('node:os');
+  const http = await import('node:http');
+  const { createHash } = await import('node:crypto');
+  const { latestHorizonLauncher, downloadHorizonLauncher } = await import('../src/main/core/horizon.js');
+  const exe = Buffer.from('horizon-setup');
+  const sha = createHash('sha256').update(exe).digest('hex');
+  const server = http.createServer((req, res) => {
+    if (req.url.startsWith('/repos/horizon-rust/horizon/releases')) {
+      return res.end(JSON.stringify([
+        { tag_name: 'v0.2.97', assets: [] },
+        { tag_name: 'launcher@0.2.104', prerelease: true, assets: [] },
+        { tag_name: 'launcher@0.2.103', assets: [{ name: 'horizon-launcher-setup.exe', size: exe.length }] },
+      ]));
+    }
+    if (req.url === '/horizon-rust/horizon/releases/download/launcher%400.2.103/SHA256SUMS') return res.end(`${'0'.repeat(64)}  other.zip\n${sha}  horizon-launcher-setup.exe\n`);
+    if (req.url === '/horizon-rust/horizon/releases/download/launcher%400.2.103/horizon-launcher-setup.exe') return res.end(exe);
+    res.writeHead(404).end();
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'shizo-horizon-'));
+  try {
+    const info = await latestHorizonLauncher({ arch: 'x64', api: base, site: base });
+    assert.deepEqual([info.version, info.file, info.sha256], ['0.2.103', 'horizon-launcher-setup.exe', sha]); // пре-релиз пропущен
+    assert.equal(await fs.readFile(await downloadHorizonLauncher(info, dir), 'utf8'), 'horizon-setup');
+    await assert.rejects(downloadHorizonLauncher({ ...info, sha256: '1'.repeat(64) }, dir), /контрольная сумма/);
+    await assert.rejects(latestHorizonLauncher({ arch: 'arm64', api: base, site: base }), /нет horizon-launcher-setup-arm64/);
+  } finally {
+    server.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});

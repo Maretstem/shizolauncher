@@ -16,6 +16,7 @@ import { fetchPack, PACK_ID, packStatus, syncPack } from './core/pack.js';
 import { diffNews, fetchDevlog, wanted } from './core/devlog.js';
 import { loadSkin } from './core/skin.js';
 import { getLocalSkin, removeLocalSkin, setLocalSkin, startSkinServer } from './core/localskin.js';
+import { downloadHorizonLauncher, latestHorizonLauncher } from './core/horizon.js';
 import { exportMrpack, exportPrism, findInstances, importArchive, importInstance } from './core/transfer.js';
 import { checkUpdate, downloadUpdate } from './core/update.js';
 import { listBackups, makeBackup, restoreBackup } from './core/backup.js';
@@ -614,6 +615,18 @@ const handlers = {
     if (id === PACK_ID) throw new Error('Моды сборки сервера обновляют админы — иначе на сервер не пустит');
     if (games.has(id)) throw new Error('Сначала закрой игру');
     return job(`update:${id}`, (opts) => modrinth.updateContent(ROOT, id, files, opts));
+  },
+
+  // --- Horizon (Minecraft на Rust): ставим его официальный лаунчер, он сам проверяет аккаунт и готовит игру ---
+  horizonInfo: () => latestHorizonLauncher(),
+  installHorizon() {
+    return job('horizon', async (opts) => {
+      const info = await latestHorizonLauncher();
+      const file = await downloadHorizonLauncher(info, path.join(ROOT, 'downloads'), { ...opts, onProgress: (p) => opts.onProgress({ ...p, label: `Horizon ${info.version}` }) });
+      const err = await shell.openPath(file); // установщик откроется у игрока — дальше он нажимает сам
+      if (err) throw new Error(`Не удалось открыть установщик: ${err}`);
+      return info.version;
+    });
   },
 
   // --- обновление самого лаунчера ---
