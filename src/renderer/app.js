@@ -592,7 +592,6 @@ function viewClassic() {
         tool('Перенести', 'folder', importInstanceDialog),
         tool('Импорт', 'save', importArchiveFile),
         tool('Модпаки', 'grid', () => go('packs')),
-        tool('Horizon (Rust)', 'play', horizonDialog),
         h('span.psep'),
         tool('Папка лаунчера', 'folder', () => act(() => call('openFolder'))),
         h('input.pfilter', { type: 'search', placeholder: 'Фильтр…', value: classicFilter, 'aria-label': 'Фильтр сборок', oninput: (e) => { classicFilter = e.target.value; const pos = e.target.selectionStart; viewClassic(); const inp = $('.pfilter'); inp.focus(); inp.setSelectionRange(pos, pos); } }),
@@ -1183,38 +1182,8 @@ function exportDialog(i) {
     ]);
 }
 
-// Horizon — Minecraft на Rust. Ставим его официальный лаунчер: только он может проверить лицензию по правилам Horizon.
-const wrow = (n, title, text) => h('div.row', {}, h('span.n', {}, String(n).padStart(2, '0')), h('div.body', {}, h('b', {}, title), h('span.wrap', {}, text)));
-function horizonDialog() {
-  const info = h('p.muted', {}, 'Узнаю последнюю версию…');
-  const go = h('button.btn.primary', { disabled: true, onclick: () => act(async () => {
-    go.disabled = true;
-    go.textContent = 'Скачиваю…';
-    const v = await call('installHorizon');
-    dlg.close();
-    toast(`Установщик Horizon ${v} открыт — пройди установку, дальше играй через лаунчер Horizon`);
-  }).finally(() => go.isConnected && ((go.disabled = false), (go.textContent = 'Скачать и установить'))) }, 'Скачать и установить');
-  dlg.classList.add('wide');
-  dialog('Horizon — Minecraft на Rust',
-    h('div.stack', {},
-      h('p', {}, 'Horizon — это Minecraft Java Edition 26.3, переписанный с нуля на языке Rust: быстрее запускается и даёт больше FPS. Миры и обычные серверы работают как в Minecraft.'),
-      h('div.rows', {},
-        wrow(1, 'Нужна лицензия', 'Horizon запускается только с аккаунтом Microsoft, на котором куплен Minecraft: Java Edition. Это правило самого Horizon, его лаунчер проверяет покупку.'),
-        wrow(2, 'Свои моды', 'Моды Fabric и Forge в Horizon не работают — у него свои моды (.hmod) из каталога playhorizon.dev/mods. Ставятся и включаются в лаунчере Horizon.'),
-        wrow(3, 'Как поставить', 'ShizoLauncher скачает официальный установщик с GitHub проекта, сверит контрольную сумму и откроет его. Дальше — по шагам установщика.'),
-      ),
-      info,
-    ),
-    [closeBtn(), h('button.btn', { onclick: () => act(() => call('openExternal', 'https://playhorizon.dev/')) }, 'Сайт Horizon'), go]);
-  call('horizonInfo').then((x) => {
-    info.textContent = `Последняя версия лаунчера Horizon: ${x.version} · ${mb(x.size)} · с github.com/horizon-rust/horizon`;
-    go.disabled = false;
-  }, (e) => (info.textContent = `Не удалось узнать версию: ${e.message}. Проверь интернет или VPN.`));
-}
-
 function viewPacks() {
   const controls = [
-    h('button.btn', { onclick: horizonDialog }, 'Horizon (Rust)'),
     h('button.btn', { onclick: importInstanceDialog }, icon('folder', 16), 'Из другого лаунчера'),
     h('button.btn', { onclick: importArchiveFile }, 'Импорт файла'),
     h('button.btn.primary', { onclick: newInstance }, icon('plus', 16), 'Пустой экземпляр'),
