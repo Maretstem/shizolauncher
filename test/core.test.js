@@ -839,3 +839,48 @@ test('проверка модов: исправление по кнопке — 
     server.close();
   }
 });
+
+test('свой скин офлайн-аккаунта: локальный сервер отдаёт подписанный профиль и текстуру', async () => {
+  const fs = await import('node:fs/promises');
+  const os = await import('node:os');
+  const { createVerify } = await import('node:crypto');
+  const { checkSkinPng, setLocalSkin, getLocalSkin, removeLocalSkin, startSkinServer } = await import('../src/main/core/localskin.js');
+  const png = (w, hh) => {
+    const b = Buffer.alloc(33);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b);
+    b.writeUInt32BE(w, 16);
+    b.writeUInt32BE(hh, 20);
+    return b;
+  };
+  checkSkinPng(png(64, 64));
+  checkSkinPng(png(64, 32));
+  assert.throws(() => checkSkinPng(png(128, 128)), /64×64/);
+  assert.throws(() => checkSkinPng(Buffer.from('GIF89a................')), /PNG/);
+
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shizo-skin-'));
+  try {
+    await fs.writeFile(path.join(root, 's.png'), png(64, 64));
+    await setLocalSkin(root, 'offline:steve', path.join(root, 's.png'), true);
+    const skin = await getLocalSkin(root, 'offline:steve');
+    assert.equal(skin.slim, true);
+    const srv = await startSkinServer(root, { uuid: 'a'.repeat(32), name: 'Steve' }, skin);
+    try {
+      const meta = await (await fetch(srv.url)).json();
+      assert.deepEqual(meta.skinDomains, ['127.0.0.1', 'localhost']);
+      const prof = await (await fetch(`${srv.url}sessionserver/session/minecraft/profile/${'a'.repeat(32)}?unsigned=false`)).json();
+      const t = prof.properties[0];
+      assert.ok(createVerify('RSA-SHA1').update(t.value).verify(meta.signaturePublickey, t.signature, 'base64'), 'подпись сходится с ключом из meta');
+      const tex = JSON.parse(Buffer.from(t.value, 'base64').toString()).textures.SKIN;
+      assert.equal(tex.metadata.model, 'slim');
+      assert.deepEqual(Buffer.from(await (await fetch(tex.url)).arrayBuffer()), skin.data);
+      assert.equal((await fetch(`${srv.url}sessionserver/session/minecraft/profile/${'b'.repeat(32)}`)).status, 204);
+      assert.equal((await fetch(`${srv.url}sessionserver/session/minecraft/join`, { method: 'POST', body: '{}' })).status, 204);
+    } finally {
+      srv.close();
+    }
+    await removeLocalSkin(root, 'offline:steve');
+    assert.equal(await getLocalSkin(root, 'offline:steve'), null);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

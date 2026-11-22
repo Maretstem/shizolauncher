@@ -65,6 +65,10 @@ const ICONS = {
   save: 'M5 4h11l3 3v13H5zM8 4v5h7V4M8 20v-6h8v6',
   box: 'M12 3l8 4.5v9L12 21l-8-4.5v-9zM4 7.5l8 4.5 8-4.5M12 12v9',
   bell: 'M6 16V11a6 6 0 0 1 12 0v5l2 2H4zM10 20a2 2 0 0 0 4 0',
+  heart: 'M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.5-7 10-7 10z',
+  sort: 'M4 6h16M7 12h10M10 18h4',
+  link: 'M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1',
+  search: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4',
 };
 const KIND = { mods: 'Моды', resourcepacks: 'Ресурспаки', shaderpacks: 'Шейдеры' };
 const option = (map, value) => Object.entries(map).map(([v, label]) => h('option', { value: v, selected: v === value }, label));
@@ -136,6 +140,28 @@ function entries() {
   return [{ ...own, isPack: true }, ...S.instances.filter((i) => i.id !== S.packId)];
 }
 const cur = () => entries().find((i) => i.id === S.config.current) ?? entries()[0];
+const SORT_BY = { played: 'Недавно запущенные', name: 'По названию', created: 'Новые сначала' };
+const sorters = { played: (a, b) => (b.lastPlayed ?? b.created ?? 0) - (a.lastPlayed ?? a.created ?? 0), name: (a, b) => a.name.localeCompare(b.name, 'ru'), created: (a, b) => (b.created ?? 0) - (a.created ?? 0) };
+// Сборка сервера всегда первой, дальше без группы, потом группы по алфавиту. -> [[название группы | '', [экземпляры]]]
+function grouped() {
+  const [own, ...rest] = entries();
+  const groups = new Map([['', [own]]]);
+  for (const i of [...rest].sort(sorters[S.config.sortBy] ?? sorters.played)) {
+    const g = i.group || '';
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(i);
+  }
+  return [...groups].sort(([a], [b]) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b, 'ru')));
+}
+const knownGroups = () => [...new Set(S.instances.map((i) => i.group).filter(Boolean))];
+const toggleGroup = (g) => {
+  const set = new Set(S.config.collapsedGroups ?? []);
+  set.has(g) ? set.delete(g) : set.add(g);
+  S.config.collapsedGroups = [...set];
+  renderSide();
+  act(() => call('setSettings', { collapsedGroups: [...set] }));
+};
+let classicOpen = false; // классический вид: открыта страница одной сборки, а не сетка
 const account = () => S.accounts.find((a) => a.id === S.config.selected);
 
 // Тема — набор переменных в styles.css; акцент и фон игрок задаёт сам
@@ -154,6 +180,8 @@ function applyStyle() {
   bg.style.filter = `blur(${Number(c.bgBlur) || 0}px)`;
   root.style.setProperty('--bg-dim', String((Number(c.bgDim) || 0) / 100));
   $('#sky').classList.toggle('custom', !!c.bgImage);
+  document.body.classList.toggle('classic', c.uiMode === 'classic');
+  $('#title-logo').hidden = c.showLogo === false;
 }
 
 async function refresh() {
@@ -227,20 +255,37 @@ function instStatus(i) {
 
 function renderSide() {
   const active = cur().id;
+  const collapsed = new Set(S.config.collapsedGroups ?? []);
+  const item = (i) => {
+    const [dot, text] = instStatus(i);
+    return h(`button.inst${i.id === active && tab === 'home' ? '.on' : ''}`, { onclick: () => select(i.id) }, tile(i), h('span', {}, h('b', {}, i.name), h('small', {}, h(`i.dot${dot ? '.' + dot : ''}`), text)));
+  };
   $('#inst-list').replaceChildren(
-    ...entries().map((i) => {
-      const [dot, text] = instStatus(i);
-      return h(`button.inst${i.id === active && tab === 'home' ? '.on' : ''}`, { onclick: () => select(i.id) }, tile(i), h('span', {}, h('b', {}, i.name), h('small', {}, h(`i.dot${dot ? '.' + dot : ''}`), text)));
-    }),
+    ...grouped().flatMap(([g, list]) => (g
+      ? [h('button.group-head', { 'aria-expanded': String(!collapsed.has(g)), onclick: () => toggleGroup(g) }, h('span.chev', {}, collapsed.has(g) ? '▸' : '▾'), g, h('small', {}, String(list.length))), ...(collapsed.has(g) ? [] : list.map(item))]
+      : list.map(item))),
   );
+  const sortBtn = $('#sort');
+  sortBtn.title = `Сортировка: ${SORT_BY[S.config.sortBy] ?? SORT_BY.played}`;
   const { discord, telegram, site } = S.config.links ?? {};
   fill($('#side-foot'),
     discord && h('button.side-link.discord', { onclick: () => act(() => call('openExternal', discord)) }, icon('chat'), 'Вступить в Discord'),
     telegram && h('button.side-link', { onclick: () => act(() => call('openExternal', telegram)) }, icon('chat'), 'Telegram'),
     site && h('button.side-link', { onclick: () => act(() => call('openExternal', site)) }, icon('globe'), 'Сайт'),
     h('button.side-link', { onclick: () => act(() => call('openFolder')) }, icon('folder'), 'Папка лаунчера'),
+    h('button.side-link.support', { onclick: supportDialog }, icon('heart'), 'Поддержать лаунчер'),
     versionCard(),
   );
+}
+
+const DONATE_URL = 'https://donatex.gg/donate/maret_stem';
+function supportDialog() {
+  dialog('Поддержать лаунчер',
+    h('div.stack', {},
+      h('p', {}, 'Это поддержка именно ShizoLauncher, а не сервера SHIZOSTAN. Все деньги идут на развитие лаунчера: новые функции, исправления и время разработчика.'),
+      h('p.muted', {}, 'Донат добровольный и ничего не даёт в игре. Оплата проходит на сайте DonateX — лаунчер не видит данных карты.'),
+    ),
+    [closeBtn('Не сейчас'), h('button.btn.primary', { onclick: () => act(() => call('openExternal', DONATE_URL)).then(() => dlg.close()) }, icon('heart', 16), 'Открыть DonateX')]);
 }
 
 // Версия лаунчера и сборки на виду, с кнопками проверки обновлений
@@ -333,8 +378,10 @@ function skinCard(acc) {
     view3d,
     h('div.skin-meta', {},
       h('b', {}, acc.name),
-      h('small', {}, acc.type === 'offline' ? 'Скин берётся с Ely.by по нику' : accountLabel(acc)),
-      site && h('button.link', { onclick: () => act(() => call('openExternal', site)) }, acc.type === 'offline' ? 'Поставить скин на Ely.by' : 'Сменить скин'),
+      h('small', {}, acc.type === 'offline' ? 'Офлайн · свой скин или с Ely.by по нику' : accountLabel(acc)),
+      acc.type === 'offline'
+        ? h('button.link', { onclick: () => ownSkinDialog(acc) }, 'Свой скин…')
+        : site && h('button.link', { onclick: () => act(() => call('openExternal', site)) }, 'Сменить скин'),
     ),
   );
 }
@@ -363,6 +410,29 @@ function msHelp() {
       h('p.muted', {}, 'Играй через Ely.by — это бесплатно, со скином, и на наш сервер пускает. Лицензионный ник можно занять и там.'),
     ),
     [closeBtn('Понятно'), h('button.btn.primary', { onclick: () => (dlg.close(), loginEly()) }, 'Войти через Ely.by')]);
+}
+
+// Свой скин офлайн-аккаунта: PNG 64×64 с компьютера. Видит его сам игрок; другим — если сервер раздаёт скины.
+function ownSkinDialog(acc) {
+  menuOpen = false;
+  renderTop();
+  const slim = h('input', { type: 'checkbox' });
+  const done = async (fn) => {
+    if (!(await act(fn))) return;
+    skinViews.delete(acc.id);
+    dlg.close();
+    toast('Скин сохранён — он появится в игре при следующем запуске');
+  };
+  dialog('Свой скин',
+    h('div.stack', {},
+      h('p.muted', {}, 'Выбери файл скина PNG 64×64 (как на сайтах скинов). В игре его увидишь ты. Другие игроки увидят его, только если сервер сам раздаёт скины; на нашем сервере надёжнее поставить скин на Ely.by.'),
+      h('label.check', {}, slim, 'Тонкие руки (модель Alex)'),
+    ),
+    [
+      h('button.btn', { onclick: () => done(async () => (await call('removeSkin', acc.id), true)) }, 'Убрать свой'),
+      h('button.btn', { onclick: () => act(() => call('openExternal', 'https://ely.by/')) }, 'Ely.by'),
+      h('button.btn.primary', { onclick: () => done(() => call('pickSkin', acc.id, slim.checked)) }, 'Выбрать файл…'),
+    ]);
 }
 
 // Один диалог на все способы входа
@@ -496,7 +566,42 @@ function subtitle(i) {
   return 'Официальная сборка сервера: ставится и обновляется одной кнопкой';
 }
 
+function viewClassic() {
+  const i = cur();
+  const collapsed = new Set(S.config.collapsedGroups ?? []);
+  const cell = (x) => h(`button.cell${x.id === i.id ? '.on' : ''}`, { onclick: () => select(x.id), ondblclick: () => play(x.id), title: 'Двойной щелчок — играть' }, tile(x), h('b', {}, x.name), h('small', {}, instStatus(x)[1]));
+  const action = (label, ic, fn, cls = '') => h(`button.tool${cls}`, { onclick: fn }, icon(ic, 18), h('span', {}, h('b', {}, label)));
+  fill(view,
+    h('div.classic-view', {},
+      h('div.classic-grid', {},
+        h('div.panel-head', {}, h('h2', {}, 'Сборки'), h('div.inline', {},
+          h('button.btn', { onclick: newInstance }, icon('plus', 16), 'Добавить'),
+          h('button.btn', { onclick: importInstanceDialog }, 'Перенести'),
+          h('button.btn', { onclick: importArchiveFile }, 'Импорт файла'),
+        )),
+        grouped().map(([g, list]) => h('section.classic-group', {},
+          g && h('button.group-head', { onclick: () => (toggleGroup(g), render()) }, h('span.chev', {}, collapsed.has(g) ? '▸' : '▾'), g, h('small', {}, String(list.length))),
+          !(g && collapsed.has(g)) && h('div.cells', {}, list.map(cell)),
+        )),
+      ),
+      h('aside.classic-side.glass', {},
+        h('div.classic-head', {}, tile(i), h('b', {}, i.name), h('small', {}, i.isPack ? `Сервер · ${i.pack?.version ?? pack?.latest ?? ''}` : `${i.mc} · ${loaderLabel(i)}`)),
+        playButton(i),
+        S.busy.includes(i.id) && h('div.progress', { id: 'prog' }, h('div.bar.wait', {}, h('div')), h('span.muted', {}, 'Подготовка…')),
+        action('Открыть сборку', 'grid', () => ((classicOpen = true), (sub = 'overview'), render())),
+        !i.virtual && action('Моды', 'sliders', () => ((classicOpen = true), (sub = 'mods'), render())),
+        !i.virtual && action('Папка', 'folder', () => act(() => call('openFolder', i.id))),
+        action('Ярлык на рабочий стол', 'link', () => makeShortcut(i)),
+        !i.virtual && !i.isPack && action('Экспорт', 'save', () => exportDialog(i)),
+        !i.virtual && action('Параметры', 'wand', () => ((classicOpen = true), (sub = 'options'), render())),
+      ),
+    ),
+  );
+  if (S.busy.includes(i.id)) ($('#prog').dataset.id = i.id), paintProgress();
+}
+
 function viewHome() {
+  if (S.config.uiMode === 'classic' && !classicOpen) return viewClassic();
   const i = cur();
   const busy = S.busy.includes(i.id);
   const mc = i.mc ?? pack?.minecraft;
@@ -505,6 +610,7 @@ function viewHome() {
 
   fill(view,
     h('div.chips', {},
+      S.config.uiMode === 'classic' && h('button.chip', { onclick: () => ((classicOpen = false), render()) }, '← Все сборки'),
       h('span.chip.hot', {}, i.isPack ? 'Сервер' : 'Экземпляр'),
       mc && h('span.chip', {}, `Minecraft ${mc}`),
       (i.loader ?? pack?.loader) && h('span.chip', {}, loaderLabel({ loader: i.loader ?? pack.loader })),
@@ -675,8 +781,17 @@ async function repair(id) {
 }
 
 async function panelContent(i, kind) {
-  const section = h('section.panel.glass', {}, h('div.panel-head', {}, h('h3', {}, KIND[kind]), h('div.inline', {}, kind === 'mods' && i.loader && h('button.btn', { onclick: () => act(async () => { const r = await call('checkMods', i.id); r.problems.length ? modProblems(i.id, r.problems, false) : toast(`Проверено модов: ${r.checked} — проблем не найдено`); }) }, icon('check', 16), 'Проверить моды'), h('button.btn', { onclick: () => ((browse.type = Object.keys(TYPE_KIND).find((t) => TYPE_KIND[t] === kind)), go('mods')) }, icon('plus', 16), 'Найти на Modrinth'))));
+  const section = h('section.panel.glass', {}, h('div.panel-head', {}, h('h3', {}, KIND[kind]), h('div.inline', {}, kind === 'mods' && i.loader && h('button.btn', { onclick: () => act(async () => { const r = await call('checkMods', i.id); r.problems.length ? modProblems(i.id, r.problems, false) : toast(`Проверено модов: ${r.checked} — проблем не найдено`); }) }, icon('check', 16), 'Проверить моды'), h('button.btn.primary', { onclick: () => openFinder() }, icon('search', 16), `Найти ${{ mods: 'моды', resourcepacks: 'ресурспаки', shaderpacks: 'шейдеры' }[kind]}`))));
   view.append(section);
+  // Поиск на Modrinth открывается под списком, не уводя со страницы сборки
+  const finder = h('section.panel.glass.finder');
+  const openFinder = () => {
+    if (finder.isConnected) return finder.scrollIntoView({ behavior: 'smooth' });
+    browse.type = Object.keys(TYPE_KIND).find((t) => TYPE_KIND[t] === kind);
+    view.append(h('div.panel-head.finder-head', {}, h('h3', {}, `Добавить: ${KIND[kind].toLowerCase()} с Modrinth`), h('button.btn', { onclick: () => (finder.previousSibling?.remove(), finder.remove(), again()) }, 'Готово')), finder);
+    viewBrowse(finder);
+    finder.scrollIntoView({ behavior: 'smooth' });
+  };
   // Для своих экземпляров моды опознаются на Modrinth — так видно, что можно обновить. Сборку сервера обновляют админы.
   const smart = kind === 'mods' && !i.isPack;
   const loading = smart && h('div.empty', {}, 'Сверяю моды с Modrinth…');
@@ -692,29 +807,41 @@ async function panelContent(i, kind) {
   }).then(again);
   const stale = files.filter((f) => f.update);
   if (stale.length) section.querySelector('.panel-head').append(h('button.btn.primary', { onclick: (e) => upgrade(null, e.currentTarget) }, icon('refresh', 16), `Обновить все (${stale.length})`));
-  if (i.isPack && kind === 'mods') section.append(h('p.muted', {}, 'Ненужный мод можно выключить переключателем — при обновлениях сборки он останется выключенным. Не выключай моды, без которых сервер не пустит: обычно это библиотеки и моды с новыми блоками и предметами.'))
+  if (i.isPack && kind === 'mods') section.append(h('p.muted', {}, 'Ненужный мод можно выключить переключателем — при обновлениях сборки он останется выключенным. Не выключай моды, без которых сервер не пустит: обычно это библиотеки и моды с новыми блоками и предметами.'));
+  // Фильтр по установленным — при сотне модов иначе не найти нужный
+  if (files.length > 8) {
+    section.append(h('input.filter', { type: 'search', placeholder: `Найти среди установленных (${files.length})…`, 'aria-label': 'Фильтр установленных',
+      oninput: (e) => { const q = e.target.value.toLowerCase(); for (const r of section.querySelectorAll('.rows > .row')) r.hidden = !r.dataset.name.includes(q); } }));
+  }
   section.append(
     files.length
       ? h('div.rows', {}, files.map((f, n) =>
-          h('div.row', {},
+          h('div.row', { 'data-name': f.file.toLowerCase() },
             h('span.n', {}, String(n + 1).padStart(2, '0')),
             h('div.body', {}, h('b', {}, f.file.replace(/\.disabled$/, '')), h('span', {}, [mb(f.size), f.version && `версия ${f.version}`, f.update && `доступна ${f.update.version}`].filter(Boolean).join(' · '))),
             f.update && h('button.btn', { onclick: (e) => upgrade([f.file], e.currentTarget) }, 'Обновить'),
             h('button.switch', { role: 'switch', 'aria-checked': String(f.enabled), 'aria-label': `Включить ${f.file}`, onclick: () => act(() => call('toggleContent', i.id, kind, f.file)).then(again) }),
             h('button.ghost-btn', { title: 'Удалить', 'aria-label': `Удалить ${f.file}`, onclick: () => act(() => call('removeContent', i.id, kind, f.file)).then(again) }, icon('trash')),
           )))
-      : h('div.empty', {}, 'Пока пусто. Добавь что-нибудь с Modrinth или положи файлы в папку игры.'),
+      : h('div.empty', {}, 'Пока пусто. Нажми «Найти» выше или положи файлы в папку игры.'),
   );
+}
+
+async function makeShortcut(i) {
+  const file = await act(() => call('makeShortcut', i.id));
+  if (file) toast(`Ярлык «${i.name}» на рабочем столе: открывает лаунчер и сразу запускает игру`);
 }
 
 function panelOptions(i) {
   const name = h('input', { type: 'text', value: i.name, maxLength: 40, disabled: i.isPack });
+  const group = h('input', { type: 'text', value: i.group ?? '', maxLength: 30, placeholder: 'Без группы', list: 'groups-list', disabled: i.isPack });
   const memory = h('input', { type: 'number', min: 1024, max: S.totalMem, step: 256, value: i.memory ?? '', placeholder: `Общая настройка: ${S.config.memory}` });
   const jvm = h('input', { type: 'text', value: i.jvmArgs ?? '', placeholder: 'Например: -XX:+UseZGC' });
   const java = h('input', { type: 'text', value: i.javaPath ?? '', placeholder: 'Пусто — лаунчер сам скачает нужную Java' });
   const save = () =>
     act(async () => {
       await call('updateInstance', i.id, { name: name.value.trim() || i.name, memory: Number(memory.value) || undefined, jvmArgs: jvm.value.trim(), javaPath: java.value.trim() });
+      if (!i.isPack && (group.value.trim() || null) !== (i.group ?? null)) await call('setGroup', i.id, group.value);
       toast('Сохранено');
       await refresh();
     });
@@ -723,6 +850,7 @@ function panelOptions(i) {
       h('h3', {}, 'Параметры экземпляра'),
       h('div.form', {},
         h('label.field', {}, 'Название', name),
+        h('label.field', {}, 'Группа', group, h('datalist', { id: 'groups-list' }, knownGroups().map((g) => h('option', { value: g })))),
         h('label.field', {}, 'Память, МБ', memory),
         h('label.field.wide', {}, 'Аргументы JVM', jvm),
         h('label.field.wide', {}, 'Путь к Java', java),
@@ -739,6 +867,7 @@ function panelOptions(i) {
         h('button.tool', { onclick: () => repair(i.id) }, icon('check', 20), h('span', {}, h('b', {}, 'Проверить файлы'), h('small', {}, 'найти и восстановить повреждённые'))),
         h('button.tool', { onclick: () => act(async () => (await call('pickIcon', i.id)) && (await refresh())) }, tile(i), h('span', {}, h('b', {}, 'Сменить иконку'), h('small', {}, i.icon ? h('span.link-inline', { onclick: (e) => (e.stopPropagation(), act(async () => (await call('resetIcon', i.id), await refresh()))) }, 'вернуть обычную') : 'PNG, JPG, WebP или GIF'))),
         !i.isPack && h('button.tool', { onclick: () => exportDialog(i) }, icon('save', 20), h('span', {}, h('b', {}, 'Экспорт'), h('small', {}, '.mrpack или .zip для Prism'))),
+        h('button.tool', { onclick: () => makeShortcut(i) }, icon('link', 20), h('span', {}, h('b', {}, 'Ярлык на рабочий стол'), h('small', {}, 'запуск этой сборки в один клик'))),
         h('button.tool.danger', {
           onclick: () =>
             confirmDialog(`Удалить «${i.name}»?`, 'Папка экземпляра удалится целиком: миры, скриншоты, моды и настройки. Вернуть будет нельзя.', 'Удалить навсегда', async () => {
@@ -818,7 +947,7 @@ function resultRow(hit, n, button) {
   );
 }
 
-function searchPanel(title, hint, controls, runSearch, makeButton) {
+function searchPanel(title, hint, controls, runSearch, makeButton, into) {
   const list = h('div.rows');
   const input = h('input', { type: 'search', placeholder: 'Поиск на Modrinth…', value: browse.query, 'aria-label': 'Поиск' });
   let timer;
@@ -842,11 +971,13 @@ function searchPanel(title, hint, controls, runSearch, makeButton) {
     h('select', { 'aria-label': 'Сортировка', onchange: (e) => ((browse.sort = e.target.value), run()) }, option(SORTS, browse.sort)),
     h('select', { 'aria-label': 'Категория', onchange: (e) => ((browse.category = e.target.value), run()) }, option(CATEGORIES, browse.category)),
   );
-  view.replaceChildren(h('h2', {}, title), h('p.sub', {}, hint), h('div.searchbar', {}, input, controls), filters, h('section.panel.glass', {}, list, more), h('div', { id: 'queue-bar' }));
+  if (into) into.replaceChildren(h('p.muted', {}, hint), h('div.searchbar', {}, input, controls), filters, list, more, h('div', { id: 'queue-bar' }));
+  else view.replaceChildren(h('h2', {}, title), h('p.sub', {}, hint), h('div.searchbar', {}, input, controls), filters, h('section.panel.glass', {}, list, more), h('div', { id: 'queue-bar' }));
+  input.focus();
   run();
 }
 
-function viewBrowse() {
+function viewBrowse(into) {
   const i = cur();
   if (i.virtual) {
     view.replaceChildren(h('h2', {}, 'Моды'), h('p.sub', {}, 'Сначала установи сборку сервера или выбери экземпляр слева — моды ставятся в выбранную сборку.'));
@@ -861,7 +992,7 @@ function viewBrowse() {
   // Что уже стоит в экземпляре: узнаём один раз до первого поиска, кнопки строятся уже с этим знанием
   let have = new Map();
   const known = browse.type === 'mod' ? call('contentInfo', i.id).then((list) => (have = new Map(list.filter((m) => m.projectId).map((m) => [m.projectId, m]))), () => {}) : Promise.resolve();
-  searchPanel('Моды', hint, types,
+  searchPanel('Моды', hint, into ? null : types,
     async (query, offset) => (await known, call('search', { query, offset, sort: browse.sort, category: browse.category, type: browse.type, mc: i.mc, loader: i.loader?.type })),
     (hit) => {
       const mine = have.get(hit.id);
@@ -893,7 +1024,7 @@ function viewBrowse() {
         },
       }, label);
       return mine ? btn : h('div.inline', {}, qbtn, btn);
-    });
+    }, into);
 }
 
 // Строка очереди внизу поиска: что набрано и кнопка «Установить всё»
@@ -1221,6 +1352,11 @@ function viewSettings() {
       h('label.field', {}, 'Аргументы JVM', text('jvmArgs', 'Например: -XX:+UseZGC')),
       h('label.field', {}, 'Путь к Java', h('div.inline', {}, java, h('button.btn', { type: 'button', onclick: async () => { const p = await act(() => call('pickJava')); if (p) (java.value = p), set({ javaPath: p }); } }, 'Выбрать…'))),
       h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.autoJoin, onchange: (e) => set({ autoJoin: e.target.checked }) }), 'Сразу заходить на сервер при запуске сборки'),
+      h('div.form', {},
+        h('label.field', {}, 'Когда игра запущена', h('select', { onchange: (e) => set({ onLaunch: e.target.value }) }, option({ keep: 'Лаунчер остаётся открытым', minimize: 'Свернуть лаунчер', hide: 'Спрятать в трей, вернуть после игры' }, cfg.onLaunch))),
+        h('label.field', {}, 'Окно игры', h('select', { onchange: (e) => { const [w, hh] = e.target.value.split('x').map(Number); set({ gameWidth: w || 0, gameHeight: hh || 0 }); } }, option({ '0x0': 'Как решит игра', '854x480': '854 × 480', '1280x720': '1280 × 720', '1600x900': '1600 × 900', '1920x1080': '1920 × 1080', '2560x1440': '2560 × 1440' }, `${cfg.gameWidth || 0}x${cfg.gameHeight || 0}`))),
+      ),
+      h('label.check', {}, h('input', { type: 'checkbox', checked: !!cfg.gameFullscreen, onchange: (e) => set({ gameFullscreen: e.target.checked }) }), 'Запускать игру на весь экран'),
       h('div.actions', {},
         h('button.btn.primary', { onclick: () => act(async () => { const t = await call('tune'); toast(`Подобрано: ${t.memory} МБ из ${t.total} МБ, флаги G1 для ${t.cpus} ядер`); await refresh(); }) }, 'Подобрать под мой компьютер'),
         h('span.muted', {}, 'Выставит память и флаги сборщика мусора по объёму ОЗУ и числу модов.'),
@@ -1228,10 +1364,15 @@ function viewSettings() {
     ),
     h('section.panel.glass', {},
       h('h3', {}, 'Оформление'),
+      h('div.form', {},
+        h('label.field', {}, 'Вид лаунчера', h('select', { onchange: (e) => ((classicOpen = false), restyle({ uiMode: e.target.value })) }, option({ modern: 'Современный — список сборок слева', classic: 'Классический, как Prism — сетка сборок' }, cfg.uiMode))),
+        h('label.field', {}, 'Порядок сборок', h('select', { onchange: (e) => restyle({ sortBy: e.target.value }) }, option(SORT_BY, cfg.sortBy))),
+      ),
+      h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.showLogo !== false, onchange: (e) => restyle({ showLogo: e.target.checked }) }), 'Надпись SHIZOLAUNCHER в заголовке окна'),
       h('div.themes', {}, Object.entries(THEMES).map(([id, label]) => h(`button.theme.t-${id}${cfg.theme === id ? '.on' : ''}`, { 'aria-pressed': String(cfg.theme === id), onclick: () => restyle({ theme: id }) }, h('i'), label))),
       h('div.form', {},
         h('label.field', {}, 'Свой цвет кнопок', h('div.inline', {}, h('input', { type: 'color', value: /^#[0-9a-f]{6}$/i.test(cfg.accent) ? cfg.accent : '#f03fd0', onchange: (e) => restyle({ accent: e.target.value }) }), h('button.btn', { type: 'button', onclick: () => restyle({ accent: '' }) }, 'Как в теме'))),
-        h('label.field', {}, 'Своя картинка на фон', h('div.inline', {}, h('button.btn', { type: 'button', onclick: () => act(async () => (await call('pickBackground')) && refresh()) }, 'Выбрать картинку…'), cfg.bgImage && h('button.btn', { type: 'button', onclick: () => restyle({ bgImage: '' }) }, 'Убрать'))),
+        h('label.field', {}, 'Своя картинка или GIF на фон', h('div.inline', {}, h('button.btn', { type: 'button', onclick: () => act(async () => (await call('pickBackground')) && refresh()) }, 'Выбрать картинку или GIF…'), cfg.bgImage && h('button.btn', { type: 'button', onclick: () => restyle({ bgImage: '' }) }, 'Убрать'))),
         h('label.field', {}, `Размытие фона: ${cfg.bgBlur} px`, h('input', { type: 'range', min: 0, max: 40, value: cfg.bgBlur, disabled: !cfg.bgImage, oninput: (e) => preview({ bgBlur: Number(e.target.value) }, e.target), onchange: (e) => restyle({ bgBlur: Number(e.target.value) }) })),
         h('label.field', {}, `Затемнение фона: ${cfg.bgDim}%`, h('input', { type: 'range', min: 0, max: 90, value: cfg.bgDim, disabled: !cfg.bgImage, oninput: (e) => preview({ bgDim: Number(e.target.value) }, e.target), onchange: (e) => restyle({ bgDim: Number(e.target.value) }) })),
       ),
@@ -1263,11 +1404,9 @@ function viewSettings() {
       h('div.rows', { id: 'checkup' }),
     ),
     h('section.panel.glass', {},
-      h('h3', {}, 'Сервер'),
-      h('p.muted', {}, 'Обычно эти поля уже заполнены администратором сервера.'),
-      h('label.field', {}, 'Ссылка на pack.json сборки', text('packUrl', 'https://example.com/pack/pack.json')),
-      h('label.field', {}, 'Адрес сервера', text('serverAddress', 'play.example.com')),
-      h('label.field', {}, 'Azure Client ID (для входа через Microsoft)', text('azureClientId', '00000000-0000-0000-0000-000000000000')),
+      h('h3', {}, 'Поддержать лаунчер'),
+      h('p.muted', {}, 'Поддержка идёт не серверу, а лаунчеру: все деньги — на развитие ShizoLauncher.'),
+      h('div.actions', {}, h('button.btn.primary', { onclick: supportDialog }, icon('heart', 16), 'Поддержать')),
     ),
     h('section.panel.glass', {},
       h('h3', {}, 'Данные'),
@@ -1302,8 +1441,12 @@ api.on('game', (g) => {
 });
 
 // Клик по уведомлению или пункту меню в трее
-api.on('navigate', ({ tab: to, post, action } = {}) => {
+api.on('navigate', ({ tab: to, post, action, launch } = {}) => {
   if (action === 'checkUpdate') return manualUpdateCheck();
+  if (launch) {
+    if (!entries().some((i) => i.id === launch)) return toast('Сборка из ярлыка не найдена — возможно, её удалили', true);
+    return select(launch).then(() => !S.running.includes(launch) && !S.busy.includes(launch) && play(launch));
+  }
   if (to === 'home') return select(S.packId);
   if (to) go(to);
   const p = post && devlog?.posts?.find((x) => x.id === post);
@@ -1350,6 +1493,15 @@ for (let n = 0; n < 70; n++) {
   $('#sky').append(star);
 }
 $('#add').append(icon('plus'));
+$('#sort').append(icon('sort'));
+$('#sort').addEventListener('click', () => {
+  const keys = Object.keys(SORT_BY);
+  const next = keys[(keys.indexOf(S.config.sortBy) + 1) % keys.length];
+  S.config.sortBy = next;
+  render();
+  toast(`Сортировка: ${SORT_BY[next]}`);
+  act(() => call('setSettings', { sortBy: next }));
+});
 $('#add').addEventListener('click', newInstance);
 dlg.addEventListener('click', (e) => e.target === dlg && dlg.close()); // клик по затемнению закрывает
 dlg.addEventListener('close', () => dlg.classList.remove('wide'));

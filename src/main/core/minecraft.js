@@ -187,7 +187,7 @@ export function buildArgs(v, vars, { features = {}, jvmExtra = [], gameExtra = [
   return [...jvmExtra, ...jvm.map(sub), v.mainClass, ...game.map(sub), ...gameExtra];
 }
 
-export async function launch({ root, versionId, gameDir, account, memory = 4096, jvmArgs = [], javaPath, server, width, height, agent, signal, onProgress, onLog }) {
+export async function launch({ root, versionId, gameDir, account, memory = 4096, jvmArgs = [], javaPath, server, width, height, fullscreen, agent, signal, onProgress, onLog }) {
   const { v, java, classpath, natives } = await install(root, versionId, { signal, onProgress, javaPath });
   const nativesDir = path.join(gameDir, '..', 'natives');
   await fs.mkdir(gameDir, { recursive: true });
@@ -225,7 +225,7 @@ export async function launch({ root, versionId, gameDir, account, memory = 4096,
     features: { has_custom_resolution: !!(width && height), is_quick_play_multiplayer: quickPlay },
     // useSystemProxies: Java сама по себе игнорирует прокси Windows, и у игроков с VPN/прокси не работают вход и скины
     jvmExtra: [`-Xmx${memory}M`, '-Djava.net.useSystemProxies=true', ...(agent ? [`-javaagent:${agent.jar}=${agent.target}`, ...(agent.prefetched ? [`-Dauthlibinjector.yggdrasil.prefetched=${agent.prefetched}`] : [])] : []), ...jvmArgs],
-    gameExtra: server && !quickPlay ? ['--server', server.host, '--port', String(server.port)] : [],
+    gameExtra: [...(server && !quickPlay ? ['--server', server.host, '--port', String(server.port)] : []), ...(fullscreen ? ['--fullscreen'] : [])],
   });
   const child = spawn(java, args, { cwd: gameDir });
   child.stdout.on('data', (d) => onLog?.(d.toString()));

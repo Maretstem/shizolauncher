@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { cleanCache, diagnose, recommendFlags, recommendMemory } from './core/care.js';
-import { authAgent, customLogin, elyLogin, freshAccount, msAuthRequest, msFinishLogin, msRedirectCode, offlineAccount } from './core/auth.js';
+import { authAgent, customLogin, ensureAuthlibInjector, elyLogin, freshAccount, msAuthRequest, msFinishLogin, msRedirectCode, offlineAccount } from './core/auth.js';
 import * as instances from './core/instances.js';
 import { ensureLoader, install, launch, loaderVersions, versionList } from './core/minecraft.js';
 import * as modrinth from './core/modrinth.js';
@@ -15,6 +15,7 @@ import { readJson, useFetch, writeJson } from './core/net.js';
 import { fetchPack, PACK_ID, packStatus, syncPack } from './core/pack.js';
 import { diffNews, fetchDevlog, wanted } from './core/devlog.js';
 import { loadSkin } from './core/skin.js';
+import { getLocalSkin, removeLocalSkin, setLocalSkin, startSkinServer } from './core/localskin.js';
 import { exportMrpack, exportPrism, findInstances, importArchive, importInstance } from './core/transfer.js';
 import { checkUpdate, downloadUpdate } from './core/update.js';
 import { listBackups, makeBackup, restoreBackup } from './core/backup.js';
@@ -32,11 +33,13 @@ app.setPath('userData', path.join(ROOT, 'electron'));
 useFetch((url, init) => net.fetch(url, init));
 
 const brand = JSON.parse(readFileSync(path.join(here, '../../launcher.config.json'), 'utf8'));
-const DEFAULTS = { memory: 4096, javaPath: '', jvmArgs: '', autoJoin: true, selected: null, current: PACK_ID, theme: 'sunset', accent: '', bgImage: '', bgBlur: 0, bgDim: 45, autoClean: true, bgUpdate: true, discordPresence: true, modCheck: true, autostart: false, closeToTray: false, notifications: true, notify: { launcher: true, pack: true, news: true, devlog: true } };
+const DEFAULTS = { memory: 4096, javaPath: '', jvmArgs: '', autoJoin: true, selected: null, current: PACK_ID, theme: 'sunset', accent: '', bgImage: '', bgBlur: 0, bgDim: 45, autoClean: true, bgUpdate: true, discordPresence: true, modCheck: true, autostart: false, closeToTray: false, notifications: true, notify: { launcher: true, pack: true, news: true, devlog: true }, onLaunch: 'keep', gameWidth: 0, gameHeight: 0, gameFullscreen: false, uiMode: 'modern', sortBy: 'played', collapsedGroups: [], showLogo: true };
 const HOSTS = { 'Серверы Minecraft': 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json', Fabric: 'https://meta.fabricmc.net/v2/versions/loader', Modrinth: 'https://api.modrinth.com/v2/tag/loader', 'Ely.by': 'https://authserver.ely.by/' };
 // Картинки с диска (скриншоты, свой фон) окно получает только через эту схему — прямого доступа к файлам у него нет
 protocol.registerSchemesAsPrivileged([{ scheme: 'shizo', privileges: { standard: true, secure: true } }]);
-const SETTING_KEYS = [...Object.keys(DEFAULTS), 'packUrl', 'serverAddress', 'azureClientId'];
+// Адрес сборки, сервера и Azure ID задаёт только launcher.config.json: игрок их больше не меняет
+const SETTING_KEYS = Object.keys(DEFAULTS);
+const ADMIN_ONLY = ['packUrl', 'serverAddress', 'azureClientId'];
 const settingsFile = path.join(ROOT, 'settings.json');
 const accountsFile = path.join(ROOT, 'accounts.bin');
 const seenFile = path.join(ROOT, 'notified.json'); // что уже показывали в уведомлениях
@@ -206,7 +209,8 @@ const handlers = {
     if (!acc) return null;
     const hit = skins.get(id);
     if (hit && Date.now() - hit.at < 600_000) return hit.skin;
-    const skin = await loadSkin(acc);
+    const own = acc.type === 'offline' ? await getLocalSkin(ROOT, acc.id) : null;
+    const skin = own ? { data: `data:image/png;base64,${own.data.toString('base64')}`, slim: own.slim, local: true } : await loadSkin(acc);
     skins.set(id, { at: Date.now(), skin });
     return skin;
   },
@@ -286,8 +290,9 @@ const handlers = {
 
   // --- оформление ---
   async pickBackground() {
-    const r = await dialog.showOpenDialog(win, { title: 'Картинка для фона', filters: [{ name: 'Картинки', extensions: ['png', 'jpg', 'jpeg', 'webp'] }], properties: ['openFile'] });
+    const r = await dialog.showOpenDialog(win, { title: 'Картинка для фона', filters: [{ name: 'Картинки', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }], properties: ['openFile'] });
     if (r.canceled) return null;
+    if ((await fs.stat(r.filePaths[0])).size > 40 * 1024 * 1024) throw new Error('Картинка больше 40 МБ — лаунчер будет тормозить');
     const name = `background${path.extname(r.filePaths[0]).toLowerCase()}`;
     for (const old of (await fs.readdir(ROOT)).filter((f) => f.startsWith('background.'))) await fs.rm(path.join(ROOT, old));
     await fs.copyFile(r.filePaths[0], path.join(ROOT, name));
@@ -375,6 +380,9 @@ const handlers = {
         if (check.problems.length) return { problems: check.problems }; // окно спросит игрока, запускать ли всё равно
       }
 
+      // Свой скин офлайн-аккаунта: локальный сервер скинов живёт, пока идёт игра
+      const localSkin = account.type === 'offline' ? await getLocalSkin(ROOT, account.id) : null;
+      const skinServer = localSkin ? await startSkinServer(ROOT, { uuid: account.uuid.replace(/-/g, ''), name: account.name }, localSkin) : null;
       account = await freshAccount(account, cfg);
       accounts = accounts.map((a) => (a.id === account.id ? account : a));
       await saveAccounts();
@@ -387,17 +395,27 @@ const handlers = {
         account,
         memory: inst.memory || cfg.memory,
         jvmArgs: (inst.jvmArgs || cfg.jvmArgs).split(/\s+/).filter(Boolean),
+        width: cfg.gameWidth || undefined,
+        height: cfg.gameHeight || undefined,
+        fullscreen: !!cfg.gameFullscreen,
         javaPath: inst.javaPath || cfg.javaPath,
         server: id === PACK_ID && cfg.autoJoin && cfg.serverAddress ? parseAddress(cfg.serverAddress) : null,
         // authlib-injector направляет игру на нужный сервер авторизации: Ely.by или свой
-        agent: await authAgent(ROOT, account),
+        agent: skinServer ? { jar: await ensureAuthlibInjector(ROOT), target: skinServer.url } : await authAgent(ROOT, account),
         onLog: log,
+      }).catch((e) => {
+        skinServer?.close();
+        throw e;
       });
       games.set(id, child);
+      if (cfg.onLaunch === 'minimize') win?.minimize();
+      else if (cfg.onLaunch === 'hide') win?.hide();
       let presence = null;
       const started = Date.now();
       const ended = (code) => {
         presence?.stop();
+        skinServer?.close();
+        if (cfg.onLaunch === 'hide' && !games.size) showWindow(); // игра закрылась — лаунчер возвращается
         // Время в игре для «Обзора»: сессии короче минуты (вылет на загрузке) не считаем
         const played = Date.now() - started;
         if (played > 60_000) instances.getInstance(ROOT, id).then((x) => x && instances.updateInstance(ROOT, id, { playTime: (x.playTime ?? 0) + played })).catch(() => {});
@@ -522,6 +540,35 @@ const handlers = {
     return r.canceled ? null : instances.setIcon(ROOT, id, r.filePaths[0]);
   },
   resetIcon: (id) => instances.setIcon(ROOT, id, null),
+  setGroup: (id, group) => instances.updateInstance(ROOT, id, { group: String(group ?? '').trim().slice(0, 30) || null }),
+  // Ярлык на рабочем столе: запускает лаунчер сразу с игрой в этой сборке
+  async makeShortcut(id) {
+    const inst = id === PACK_ID ? { name: config().serverName, icon: null, ...(await instances.getInstance(ROOT, id)) } : await instances.getInstance(ROOT, id);
+    if (!inst) throw new Error('Экземпляр не найден');
+    const file = path.join(app.getPath('desktop'), `${inst.name.replace(/[\\/:*?"<>|]/g, '_')}.lnk`);
+    let icon = process.execPath;
+    if (inst.icon) {
+      icon = path.join(instances.gameDir(ROOT, id), '..', 'shortcut.ico');
+      await fs.writeFile(icon, pngToIco(nativeImage.createFromPath(instances.iconFile(ROOT, id, inst.icon.split('?')[0])).resize({ width: 256, height: 256 }).toPNG()));
+    }
+    const ok = shell.writeShortcutLink(file, 'create', { target: process.execPath, args: `${app.isPackaged ? '' : `"${app.getAppPath()}" `}--instance=${id}`, icon, iconIndex: 0, description: `Играть: ${inst.name}` });
+    if (!ok) throw new Error('Windows не дала создать ярлык');
+    return file;
+  },
+
+  // --- свой скин офлайн-аккаунта ---
+  async pickSkin(accId, slim) {
+    if (!accounts.some((a) => a.id === accId && a.type === 'offline')) throw new Error('Свой скин ставится офлайн-аккаунту. Ely.by и Microsoft меняют скин у себя на сайте.');
+    const r = await dialog.showOpenDialog(win, { title: 'Скин (PNG 64×64)', filters: [{ name: 'Скин', extensions: ['png'] }], properties: ['openFile'] });
+    if (r.canceled) return false;
+    await setLocalSkin(ROOT, accId, r.filePaths[0], slim);
+    skins.delete(accId);
+    return true;
+  },
+  async removeSkin(accId) {
+    await removeLocalSkin(ROOT, accId);
+    skins.delete(accId);
+  },
   instanceStats: (id) => instances.instanceStats(ROOT, id),
 
   // --- очередь модов и починка по кнопке из проверки модов ---
@@ -614,12 +661,20 @@ ipcMain.handle('api', (_event, name, ...args) => {
 });
 
 if (!app.requestSingleInstanceLock()) app.quit();
-app.on('second-instance', showWindow);
+// Ярлык сборки (--instance=id): лаунчер открывается и сразу запускает игру
+const launchArg = (argv) => argv.find((a) => a.startsWith('--instance='))?.slice(11);
+let pendingLaunch = launchArg(process.argv);
+app.on('second-instance', (_e, argv) => {
+  showWindow();
+  const id = launchArg(argv);
+  if (id) send('navigate', { launch: id });
+});
 app.on('window-all-closed', () => app.quit());
 app.on('before-quit', () => (quitting = true));
 
 app.whenReady().then(async () => {
   settings = await readJson(settingsFile, {});
+  for (const k of ADMIN_ONLY) delete settings[k]; // старые ручные адреса больше не перебивают настройки сервера
   accounts = await loadAccounts();
   Menu.setApplicationMenu(null);
   app.setAppUserModelId('ru.shizostan.launcher'); // то же, что appId установщика — иначе Windows не покажет уведомления
@@ -643,7 +698,7 @@ app.whenReady().then(async () => {
       const file =
         url.hostname === 'shot' ? instances.screenshotFile(ROOT, parts[0], parts[1])
         : url.hostname === 'icon' ? instances.iconFile(ROOT, parts[0], parts[1])
-        : url.hostname === 'bg' && /^background\.(png|jpe?g|webp)$/.test(parts[0]) ? path.join(ROOT, parts[0])
+        : url.hostname === 'bg' && /^background\.(png|jpe?g|webp|gif)$/.test(parts[0]) ? path.join(ROOT, parts[0])
         : null;
       if (!file) throw new Error('нет такого ресурса');
       return await net.fetch(pathToFileURL(file).href);
@@ -663,6 +718,21 @@ app.whenReady().then(async () => {
   });
   updateTray();
   await win.loadFile(path.join(here, '../renderer/index.html'));
+  if (pendingLaunch) setTimeout(() => send('navigate', { launch: pendingLaunch }), 1500); // окно уже загружено
   setTimeout(() => checkNews().catch(() => {}), 15_000);
   setInterval(() => checkNews().catch(() => {}), 10 * 60_000);
 });
+
+function pngToIco(png) {
+  const head = Buffer.alloc(22);
+  head.writeUInt16LE(0, 0);
+  head.writeUInt16LE(1, 2); // тип: иконка
+  head.writeUInt16LE(1, 4); // одна картинка
+  head.writeUInt8(0, 6); // 0 = 256 px
+  head.writeUInt8(0, 7);
+  head.writeUInt16LE(1, 10); // плоскости
+  head.writeUInt16LE(32, 12); // бит на пиксель
+  head.writeUInt32LE(png.length, 14);
+  head.writeUInt32LE(22, 18);
+  return Buffer.concat([head, png]);
+}
