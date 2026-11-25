@@ -182,10 +182,23 @@ function applyStyle() {
     root.style.setProperty('--grad', `linear-gradient(180deg, ${c.accent}, color-mix(in srgb, ${c.accent} 62%, #000))`);
   }
   const bg = $('#bgimg');
-  bg.style.backgroundImage = c.bgImage ? `url("shizo://bg/${c.bgImage}")` : '';
-  bg.style.filter = `blur(${Number(c.bgBlur) || 0}px)`;
-  root.style.setProperty('--bg-dim', String((Number(c.bgDim) || 0) / 100));
-  $('#sky').classList.toggle('custom', !!c.bgImage);
+  const video = $('#bgvideo');
+  const own = c.bgImage ? `shizo://bg/${c.bgImage}` : '';
+  const isVideo = /\.(mp4|webm)(\?|$)/i.test(c.bgImage ?? '');
+  // Без своего фона — живой фон лаунчера; если «Живой фон» выключен — его неподвижный кадр
+  const src = own ? (isVideo ? own : '') : c.liveBg !== false && !c.calm ? 'assets/bg.webm' : '';
+  bg.style.backgroundImage = own && !isVideo ? `url("${own}")` : !src ? 'url("assets/bg-poster.jpg")' : '';
+  if (video.getAttribute('src') !== src) {
+    if (src) video.setAttribute('src', src);
+    else video.removeAttribute('src');
+    video.load();
+  }
+  video.hidden = !src;
+  if (src && !document.hidden) video.play().catch(() => {});
+  for (const el of [bg, video]) el.style.filter = own ? `blur(${Number(c.bgBlur) || 0}px)` : '';
+  root.style.setProperty('--bg-dim', String(own ? (Number(c.bgDim) || 0) / 100 : 0.2));
+  $('#sky').classList.add('custom');
+  document.body.classList.toggle('calm', !!c.calm);
   document.body.classList.toggle('classic', c.uiMode === 'classic');
 }
 
@@ -1379,6 +1392,11 @@ async function loginMicrosoft() {
 }
 
 // ---------- настройки ----------
+let settingsTab = 'game';
+const SETTINGS_TABS = [['game', 'Игра'], ['look', 'Оформление'], ['launch', 'Запуск и обновления'], ['notify', 'Уведомления и трей'], ['diag', 'Диагностика'], ['about', 'О лаунчере']];
+// Какой раздел к какой вкладке относится — по заголовку панели
+const SETTINGS_OF = { 'Игра': 'game', 'Оформление': 'look', 'Интерфейс': 'look', 'Запуск и обновления': 'launch', 'Фоновая работа и уведомления': 'notify', 'Диагностика и кэш': 'diag', 'Поддержать лаунчер': 'about', 'Данные': 'about', 'О лаунчере': 'about' };
+
 function viewSettings() {
   const cfg = S.config;
   const set = (patch) => act(async () => (await call('setSettings', patch), (S = await call('state')), renderSide()));
@@ -1401,7 +1419,29 @@ function viewSettings() {
   };
   const java = text('javaPath', 'Пусто — лаунчер сам скачает нужную Java');
   view.replaceChildren(
-    h('h2', {}, 'Настройки'),
+    h('div.panel-head', {}, h('h2', {}, 'Настройки'), h('button.btn', { onclick: () => confirmDialog('Сбросить настройки?', 'Память, вид, фон, уведомления и остальные настройки вернутся к начальным. Аккаунты, сборки и миры не тронутся.', 'Сбросить', async () => { await call('resetSettings'); toast('Настройки сброшены'); await refresh(); }) }, icon('refresh', 16), 'Сбросить всё')),
+    h('nav.pills.glass.settings-tabs', {}, SETTINGS_TABS.map(([id, label]) => h(`button.pill${settingsTab === id ? '.on' : ''}`, { onclick: () => ((settingsTab = id), viewSettings(), (view.scrollTop = 0)) }, label))),
+    h('section.panel.glass', {},
+      h('h3', {}, 'О лаунчере'),
+      h('div.about', {},
+        h('img', { src: 'assets/icon.png', alt: '' }),
+        h('div', {}, h('b', {}, `ShizoLauncher ${S.version}`), h('span.muted', {}, update ? `Доступна версия ${update.version}` : 'Последняя версия')),
+        h('button.btn', { onclick: manualUpdateCheck }, icon('refresh', 16), 'Проверить обновления'),
+      ),
+      h('div.actions', {},
+        h('button.btn', { onclick: () => act(() => call('openExternal', `https://github.com/${S.config.updateRepo}/releases`)) }, 'Что нового в версиях'),
+        h('button.btn', { onclick: () => act(() => call('openExternal', `https://github.com/${S.config.updateRepo}`)) }, 'Исходный код'),
+      ),
+    ),
+    h('section.panel.glass', {},
+      h('h3', {}, 'Запуск и обновления'),
+      h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.splash !== false, onchange: (e) => set({ splash: e.target.checked }) }), 'Окно загрузки при запуске'),
+      h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.autoUpdate !== false, onchange: (e) => set({ autoUpdate: e.target.checked }) }), 'Обновлять лаунчер автоматически при запуске — как Discord'),
+      h('p.muted', {}, 'Окно загрузки проверяет новую версию, скачивает и ставит её, а потом открывает лаунчер. Без окна загрузки обновление предложит кнопка «Обновление» наверху.'),
+      h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.bgUpdate !== false, onchange: (e) => set({ bgUpdate: e.target.checked }) }), 'Обновлять сборку сервера в фоне, пока лаунчер открыт'),
+      h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.modCheck !== false, onchange: (e) => set({ modCheck: e.target.checked }) }), 'Проверять моды перед запуском игры'),
+      h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.discordPresence !== false, onchange: (e) => set({ discordPresence: e.target.checked }) }), 'Показывать в Discord, что я играю'),
+    ),
     h('section.panel.glass', {},
       h('h3', {}, 'Игра'),
       h('label.field', {}, h('span', {}, 'Память для игры: ', memLabel, ` из ${S.totalMem} МБ на компьютере`), memory),
@@ -1424,11 +1464,16 @@ function viewSettings() {
         h('label.field', {}, 'Вид лаунчера', h('select', { onchange: (e) => ((classicOpen = false), restyle({ uiMode: e.target.value })) }, option({ modern: 'Современный — список сборок слева', classic: 'Классический, как Prism — сетка сборок' }, cfg.uiMode))),
         h('label.field', {}, 'Порядок сборок', h('select', { onchange: (e) => restyle({ sortBy: e.target.value }) }, option(SORT_BY, cfg.sortBy))),
       ),
+      h('div.form', {},
+        h('label.field', {}, 'Масштаб интерфейса', h('select', { onchange: (e) => set({ uiScale: Number(e.target.value) }) }, option({ 80: '80 %', 90: '90 %', 100: '100 % — обычный', 110: '110 %', 125: '125 %', 150: '150 %' }, String(cfg.uiScale ?? 100)))),
+        h('label.field', {}, 'Фон', h('select', { onchange: (e) => restyle({ liveBg: e.target.value === 'live' }) }, option({ live: 'Живой фон SHIZOSTAN', still: 'Неподвижный кадр — меньше нагрузки' }, cfg.liveBg === false ? 'still' : 'live'))),
+      ),
+      h('label.check', {}, h('input', { type: 'checkbox', checked: !!cfg.calm, onchange: (e) => restyle({ calm: e.target.checked }) }), 'Спокойный режим: без анимаций и живого фона — для слабых ПК'),
       h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.showServerPack !== false, onchange: (e) => restyle({ showServerPack: e.target.checked }) }), `Показывать сборку сервера ${cfg.serverName} в списке`),
       h('div.themes', {}, Object.entries(THEMES).map(([id, label]) => h(`button.theme.t-${id}${cfg.theme === id ? '.on' : ''}`, { 'aria-pressed': String(cfg.theme === id), onclick: () => restyle({ theme: id }) }, h('i'), label))),
       h('div.form', {},
         h('label.field', {}, 'Свой цвет кнопок', h('div.inline', {}, h('input', { type: 'color', value: /^#[0-9a-f]{6}$/i.test(cfg.accent) ? cfg.accent : '#f03fd0', onchange: (e) => restyle({ accent: e.target.value }) }), h('button.btn', { type: 'button', onclick: () => restyle({ accent: '' }) }, 'Как в теме'))),
-        h('label.field', {}, 'Своя картинка или GIF на фон', h('div.inline', {}, h('button.btn', { type: 'button', onclick: () => act(async () => (await call('pickBackground')) && refresh()) }, 'Выбрать картинку или GIF…'), cfg.bgImage && h('button.btn', { type: 'button', onclick: () => restyle({ bgImage: '' }) }, 'Убрать'))),
+        h('label.field', {}, 'Свой фон: картинка, GIF или видео', h('div.inline', {}, h('button.btn', { type: 'button', onclick: () => act(async () => (await call('pickBackground')) && refresh()) }, 'Выбрать файл…'), cfg.bgImage && h('button.btn', { type: 'button', onclick: () => restyle({ bgImage: '' }) }, 'Вернуть фон SHIZOSTAN'))),
         h('label.field', {}, `Размытие фона: ${cfg.bgBlur} px`, h('input', { type: 'range', min: 0, max: 40, value: cfg.bgBlur, disabled: !cfg.bgImage, oninput: (e) => preview({ bgBlur: Number(e.target.value) }, e.target), onchange: (e) => restyle({ bgBlur: Number(e.target.value) }) })),
         h('label.field', {}, `Затемнение фона: ${cfg.bgDim}%`, h('input', { type: 'range', min: 0, max: 90, value: cfg.bgDim, disabled: !cfg.bgImage, oninput: (e) => preview({ bgDim: Number(e.target.value) }, e.target), onchange: (e) => restyle({ bgDim: Number(e.target.value) }) })),
       ),
@@ -1447,14 +1492,10 @@ function viewSettings() {
     ),
     h('section.panel.glass', {},
       h('h3', {}, 'Диагностика и кэш'),
-      h('div.row', {}, h('div.body', {}, h('b', {}, `Лаунчер ${S.version}`), h('span', {}, update ? `Доступна версия ${update.version}` : 'Обновления проверяются при запуске и каждые 30 минут')), h('button.btn', { onclick: manualUpdateCheck }, icon('refresh', 16), 'Проверить обновления')),
       h('div.actions', {},
         h('button.btn.primary', { onclick: runCheckup }, 'Проверить всё'),
         h('button.btn', { onclick: () => act(async () => { const r = await call('cleanCache'); toast(r.files ? `Удалено файлов: ${r.files}, освобождено ${mb(r.bytes)}` : 'Чистить нечего — кэш в порядке'); }) }, 'Очистить кэш'),
         h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.autoClean, onchange: (e) => set({ autoClean: e.target.checked }) }), 'Чистить кэш при каждом запуске'),
-        h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.bgUpdate !== false, onchange: (e) => set({ bgUpdate: e.target.checked }) }), 'Обновлять сборку в фоне, пока лаунчер открыт'),
-        h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.modCheck !== false, onchange: (e) => set({ modCheck: e.target.checked }) }), 'Проверять моды перед запуском'),
-        h('label.check', {}, h('input', { type: 'checkbox', checked: cfg.discordPresence !== false, onchange: (e) => set({ discordPresence: e.target.checked }) }), 'Показывать в Discord, что я играю'),
       ),
       h('p.muted', {}, 'Чистка убирает недокачанные файлы, журналы игры старше недели и отчёты о вылетах старше месяца. Миры, моды, скриншоты и настройки не трогает.'),
       h('div.rows', { id: 'checkup' }),
@@ -1470,6 +1511,7 @@ function viewSettings() {
       h('div.actions', {}, h('button.btn', { onclick: () => act(() => call('openFolder')) }, icon('folder', 16), 'Открыть папку лаунчера')),
     ),
   );
+  for (const sec of view.querySelectorAll(':scope > section.panel')) sec.hidden = (SETTINGS_OF[sec.querySelector('h3')?.textContent] ?? 'about') !== settingsTab;
 }
 
 // ---------- события из главного процесса ----------
@@ -1548,6 +1590,11 @@ for (let n = 0; n < 70; n++) {
   star.style.opacity = (0.15 + Math.random() * 0.6).toFixed(2);
   $('#sky').append(star);
 }
+document.addEventListener('visibilitychange', () => {
+  const v = $('#bgvideo');
+  if (document.hidden) v.pause();
+  else if (v.getAttribute('src')) v.play().catch(() => {});
+});
 $('#add').append(icon('plus'));
 $('#sort').append(icon('sort'));
 $('#sort').addEventListener('click', () => {

@@ -7,7 +7,9 @@ import path from 'node:path';
 const [outDir, stepsFile] = process.argv.slice(2);
 const steps = stepsFile ? JSON.parse(await fs.readFile(stepsFile, 'utf8')) : [];
 app.on('browser-window-created', (_e, win) => {
-  win.webContents.once('did-finish-load', async () => {
+  win.webContents.on('did-finish-load', async function shoot() {
+    if (win.webContents.getURL().includes('splash.html')) return; // окно загрузки не снимаем
+    win.webContents.off('did-finish-load', shoot);
     win.webContents.on('console-message', (ev) => console.log('[окно]', ev.message));
     await fs.mkdir(outDir, { recursive: true });
     for (const [n, js] of ['0', ...steps].entries()) {

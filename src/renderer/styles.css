@@ -420,3 +420,16 @@ body.classic .side { display: none; }
 .pbtn.danger, .pbtn.danger .ic { color: var(--bad); }
 .pstatus { display: flex; gap: 18px; padding: 8px 14px; border-radius: 12px; font-size: 12px; color: var(--muted); }
 .pstatus-ver { margin-left: auto; }
+
+/* ---- настройки вкладками ---- */
+.settings-tabs { align-self: flex-start; flex-wrap: wrap; }
+.about { display: flex; align-items: center; gap: 14px; }
+.about img { width: 52px; height: 52px; border-radius: 12px; image-rendering: pixelated; }
+.about > div { display: flex; flex-direction: column; flex: 1; }
+.about b { font-size: 16px; }
+
+/* ---- живой фон ---- */
+video.bgimg { width: calc(100% + 80px); height: calc(100% + 80px); object-fit: cover; }
+
+/* ---- спокойный режим: без анимаций ---- */
+body.calm *, body.calm *::before, body.calm *::after { animation: none !important; transition: none !important; }

@@ -33,7 +33,7 @@ app.setPath('userData', path.join(ROOT, 'electron'));
 useFetch((url, init) => net.fetch(url, init));
 
 const brand = JSON.parse(readFileSync(path.join(here, '../../launcher.config.json'), 'utf8'));
-const DEFAULTS = { memory: 4096, javaPath: '', jvmArgs: '', autoJoin: true, selected: null, current: PACK_ID, theme: 'sunset', accent: '', bgImage: '', bgBlur: 0, bgDim: 45, autoClean: true, bgUpdate: true, discordPresence: true, modCheck: true, autostart: false, closeToTray: false, notifications: true, notify: { launcher: true, pack: true, news: true, devlog: true }, onLaunch: 'keep', gameWidth: 0, gameHeight: 0, gameFullscreen: false, uiMode: 'modern', sortBy: 'played', collapsedGroups: [], showServerPack: true };
+const DEFAULTS = { memory: 4096, javaPath: '', jvmArgs: '', autoJoin: true, selected: null, current: PACK_ID, theme: 'sunset', accent: '', bgImage: '', bgBlur: 0, bgDim: 45, autoClean: true, bgUpdate: true, discordPresence: true, modCheck: true, autostart: false, closeToTray: false, notifications: true, notify: { launcher: true, pack: true, news: true, devlog: true }, onLaunch: 'keep', gameWidth: 0, gameHeight: 0, gameFullscreen: false, uiMode: 'modern', sortBy: 'played', collapsedGroups: [], showServerPack: true, autoUpdate: true, splash: true, liveBg: true, uiScale: 100, calm: false };
 const HOSTS = { 'Серверы Minecraft': 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json', Fabric: 'https://meta.fabricmc.net/v2/versions/loader', Modrinth: 'https://api.modrinth.com/v2/tag/loader', 'Ely.by': 'https://authserver.ely.by/' };
 // Картинки с диска (скриншоты, свой фон) окно получает только через эту схему — прямого доступа к файлам у него нет
 protocol.registerSchemesAsPrivileged([{ scheme: 'shizo', privileges: { standard: true, secure: true } }]);
@@ -89,6 +89,7 @@ async function saveAccounts() {
 async function saveSettings(patch) {
   for (const k of Object.keys(patch)) if (!SETTING_KEYS.includes(k)) throw new Error(`Неизвестная настройка: ${k}`);
   if ('autostart' in patch) setAutostart(!!patch.autostart);
+  if ('uiScale' in patch) win?.webContents.setZoomFactor(scaleOf(patch.uiScale));
   settings = { ...settings, ...patch };
   await writeJson(settingsFile, settings);
   updateTray();
@@ -201,6 +202,14 @@ const handlers = {
     };
   },
   setSettings: (patch) => saveSettings(patch),
+  // Сброс к начальным: остаются выбранный аккаунт и сборка, автозапуск выключается
+  async resetSettings() {
+    const keep = { selected: settings.selected, current: settings.current };
+    if (settings.autostart) setAutostart(false);
+    settings = {};
+    await saveSettings(Object.fromEntries(Object.entries(keep).filter(([, v]) => v != null)));
+    win?.webContents.setZoomFactor(1);
+  },
   devlog: () => fetchDevlog(config().packUrl),
   testNotification: () => notify({ title: 'Уведомления ShizoLauncher работают', body: 'Так будут выглядеть новости, ивенты и обновления.', tab: 'home' }),
   // Скин для 3D-превью; кэш на 10 минут, чтобы меню не дёргало серверы скинов при каждом открытии
@@ -290,9 +299,9 @@ const handlers = {
 
   // --- оформление ---
   async pickBackground() {
-    const r = await dialog.showOpenDialog(win, { title: 'Картинка для фона', filters: [{ name: 'Картинки', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }], properties: ['openFile'] });
+    const r = await dialog.showOpenDialog(win, { title: 'Фон лаунчера', filters: [{ name: 'Картинки, GIF и видео', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'mp4', 'webm'] }], properties: ['openFile'] });
     if (r.canceled) return null;
-    if ((await fs.stat(r.filePaths[0])).size > 40 * 1024 * 1024) throw new Error('Картинка больше 40 МБ — лаунчер будет тормозить');
+    if ((await fs.stat(r.filePaths[0])).size > 150 * 1024 * 1024) throw new Error('Файл больше 150 МБ — лаунчер будет тормозить');
     const name = `background${path.extname(r.filePaths[0]).toLowerCase()}`;
     for (const old of (await fs.readdir(ROOT)).filter((f) => f.startsWith('background.'))) await fs.rm(path.join(ROOT, old));
     await fs.copyFile(r.filePaths[0], path.join(ROOT, name));
@@ -624,14 +633,7 @@ const handlers = {
       const info = await checkUpdate(config().updateRepo, app.getVersion());
       if (!info) throw new Error('Обновление уже не нужно');
       const file = await downloadUpdate(info, path.join(ROOT, 'updates'), { ...opts, onProgress: (p) => opts.onProgress({ ...p, label: `Обновление ${info.version}` }) });
-      // Тихая установка поверх текущей версии, затем запуск новой. Делает это крошечный скрипт Windows Script Host:
-      // флаг установщика --force-run ищет ярлык в «Пуске», которого в этот момент нет, а отдельно запущенный
-      // PowerShell без консоли молча завершается. wscript — оконная программа, ей консоль не нужна.
-      const helper = path.join(path.dirname(file), 'finish-update.js');
-      const js = `var sh = new ActiveXObject('WScript.Shell');\nsh.Run(${JSON.stringify(`"${file}" /S`)}, 0, true);\nsh.Run(${JSON.stringify(`"${process.execPath}"`)}, 1, false);\n`;
-      await fs.writeFile(helper, '\ufeff' + js, 'utf16le'); // UTF-16 с BOM: путь может быть на русском
-      spawn('wscript.exe', ['//B', '//Nologo', helper], { detached: true, stdio: 'ignore', windowsHide: true }).on('error', () => {}).unref();
-      setTimeout(() => app.quit(), 500);
+      await applyUpdate(file);
     });
   },
   // Шейдер ставится вместе с Iris/Oculus, если его ещё нет. -> { files, extra }
@@ -679,6 +681,10 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   app.setAppUserModelId('ru.shizostan.launcher'); // то же, что appId установщика — иначе Windows не покажет уведомления
   if (config().autostart) setAutostart(true); // путь к exe мог смениться после переустановки
+  // Окно загрузки, как у Discord: проверяет обновление и ставит его до того, как откроется лаунчер
+  const splash = !hiddenStart && config().splash !== false ? await openSplash() : null;
+  if (splash && (await startupUpdate(splash))) return; // обновление ставится, лаунчер перезапустится сам
+  splashStatus(splash, 'Запускаю…');
   win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -698,7 +704,7 @@ app.whenReady().then(async () => {
       const file =
         url.hostname === 'shot' ? instances.screenshotFile(ROOT, parts[0], parts[1])
         : url.hostname === 'icon' ? instances.iconFile(ROOT, parts[0], parts[1])
-        : url.hostname === 'bg' && /^background\.(png|jpe?g|webp|gif)$/.test(parts[0]) ? path.join(ROOT, parts[0])
+        : url.hostname === 'bg' && /^background\.(png|jpe?g|webp|gif|mp4|webm)$/.test(parts[0]) ? path.join(ROOT, parts[0])
         : null;
       if (!file) throw new Error('нет такого ресурса');
       return await net.fetch(pathToFileURL(file).href);
@@ -709,7 +715,11 @@ app.whenReady().then(async () => {
   if (config().autoClean) cleanCache(ROOT).catch(() => {}); // тихо, при каждом запуске
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e) => e.preventDefault());
-  win.once('ready-to-show', () => !hiddenStart && win.show());
+  win.once('ready-to-show', () => {
+    if (!hiddenStart) win.show();
+    if (splash && !splash.isDestroyed()) splash.destroy();
+  });
+  win.webContents.on('did-finish-load', () => win.webContents.setZoomFactor(scaleOf(config().uiScale)));
   // Крестик сворачивает в трей, если игрок так выбрал; «Выйти» в трее и обновление закрывают по-настоящему
   win.on('close', (e) => {
     if (quitting || !config().closeToTray) return;
@@ -735,4 +745,71 @@ function pngToIco(png) {
   head.writeUInt32LE(png.length, 14);
   head.writeUInt32LE(22, 18);
   return Buffer.concat([head, png]);
+}
+
+const scaleOf = (v) => Math.min(1.5, Math.max(0.75, (Number(v) || 100) / 100));
+
+// Тихая установка поверх текущей версии, затем запуск новой. Делает это крошечный скрипт Windows Script Host:
+// флаг установщика --force-run ищет ярлык в «Пуске», которого в этот момент нет, а отдельно запущенный
+// PowerShell без консоли молча завершается. wscript — оконная программа, ей консоль не нужна.
+async function applyUpdate(file) {
+  const helper = path.join(path.dirname(file), 'finish-update.js');
+  const js = `var sh = new ActiveXObject('WScript.Shell');\nsh.Run(${JSON.stringify(`"${file}" /S`)}, 0, true);\nsh.Run(${JSON.stringify(`"${process.execPath}"`)}, 1, false);\n`;
+  await fs.writeFile(helper, '\ufeff' + js, 'utf16le'); // UTF-16 с BOM: путь может быть на русском
+  spawn('wscript.exe', ['//B', '//Nologo', helper], { detached: true, stdio: 'ignore', windowsHide: true }).on('error', () => {}).unref();
+  setTimeout(() => app.quit(), 500);
+}
+
+async function openSplash() {
+  const splash = new BrowserWindow({ width: 300, height: 340, frame: false, resizable: false, maximizable: false, show: false, center: true, backgroundColor: '#120c22', icon: ICON, title: 'ShizoLauncher', webPreferences: { sandbox: true } });
+  splash.once('ready-to-show', () => splash.show());
+  await splash.loadFile(path.join(here, '../renderer/splash.html')).catch(() => {});
+  splashStatus(splash, 'Загрузка', '', null, `v${app.getVersion()}`);
+  return splash;
+}
+
+// Текст и полоска окна загрузки; progress = null — без полоски
+function splashStatus(splash, status, detail = '', progress = null, ver) {
+  if (!splash || splash.isDestroyed()) return;
+  const js = `(() => {
+    document.getElementById('status').textContent = ${JSON.stringify(status)};
+    document.getElementById('detail').textContent = ${JSON.stringify(detail)};
+    document.getElementById('bar').style.visibility = ${progress == null ? "'hidden'" : "'visible'"};
+    document.getElementById('fill').style.width = '${Math.round((progress ?? 0) * 100)}%';
+    ${ver ? `document.getElementById('ver').textContent = ${JSON.stringify(ver)};` : ''}
+  })()`;
+  splash.webContents.executeJavaScript(js).catch(() => {});
+}
+
+// -> true, если обновление скачано и уже ставится (лаунчер закроется и откроется новым)
+async function startupUpdate(splash) {
+  const started = Date.now();
+  splashStatus(splash, 'Проверяю обновления…');
+  const cfg = config();
+  // В режиме разработки (electron .) ставить нечего; долго не ждём — без сети лаунчер должен открываться быстро
+  const info = app.isPackaged && cfg.autoUpdate !== false
+    ? await Promise.race([checkUpdate(cfg.updateRepo, app.getVersion()).catch(() => null), new Promise((r) => setTimeout(() => r(null), 7000))])
+    : null;
+  if (info) {
+    try {
+      let last = 0;
+      const file = await downloadUpdate(info, path.join(ROOT, 'updates'), {
+        onProgress: (p) => {
+          if (Date.now() - last < 120) return;
+          last = Date.now();
+          const ratio = p.totalBytes ? p.bytes / p.totalBytes : 0;
+          splashStatus(splash, `Обновление ${info.version}`, p.totalBytes ? `${(p.bytes / 1048576).toFixed(1)} из ${(p.totalBytes / 1048576).toFixed(1)} МБ` : 'Скачиваю…', ratio);
+        },
+      });
+      splashStatus(splash, `Устанавливаю ${info.version}…`, 'Лаунчер откроется сам', 1);
+      await applyUpdate(file);
+      return true;
+    } catch (e) {
+      splashStatus(splash, 'Обновиться не вышло', 'Запускаю текущую версию');
+      await new Promise((r) => setTimeout(r, 1200));
+    }
+  }
+  // Окно не мелькает: даём анимации хотя бы секунду
+  await new Promise((r) => setTimeout(r, Math.max(0, 1000 - (Date.now() - started))));
+  return false;
 }
